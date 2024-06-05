@@ -1,0 +1,26 @@
+[build-system]
+requires = ["flit_core>=3.4"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "mishax"
+version = "0.0.1"
+authors = [
+  { name="Mishax Developers", email="no-reply@google.com" },
+]
+description = "Mishax is a utility library for mechanistic interpretability research."
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+]
+dependencies = ["immutabledict", "greenlet"]
+
+[project.optional-dependencies]
+dev = ["jax", "jaxlib", "absl-py"]
+
+[project.urls]
+Homepage = "https://github.com/google-deepmind/mishax"
+Issues = "https://github.com/google-deepmind/mishax/issues"
