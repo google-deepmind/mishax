@@ -26,3 +26,8 @@ python3 -m pip install git+git://github.com/google-deepmind/mishax.git[dev]
 python3 -m mishax.ast_patcher_test
 python3 -m mishax.safe_greenlet_test
 ```
+
+## Colab Tutorial
+
+A colab notebook demonstrating how to instrument Gemma internals with mishax
+is available here: [colab link](https://colab.sandbox.google.com/drive/1kKkQJvrsWVI5-VfaQ8M_itQVm3goaxkM)
