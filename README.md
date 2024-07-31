@@ -30,4 +30,4 @@ python3 -m mishax.safe_greenlet_test
 ## Colab Tutorial
 
 A colab notebook demonstrating how to instrument Gemma internals with mishax
-is available here: [colab link](https://colab.sandbox.google.com/drive/1kKkQJvrsWVI5-VfaQ8M_itQVm3goaxkM)
+is available here: [colab link](https://colab.research.google.com/drive/1kKkQJvrsWVI5-VfaQ8M_itQVm3goaxkM)
