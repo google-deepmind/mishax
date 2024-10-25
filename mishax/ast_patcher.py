@@ -19,9 +19,12 @@ import builtins
 from collections.abc import Callable, Mapping, Sequence
 import contextlib
 import dataclasses
+import importlib
 import inspect
 import os
+import sys
 import tempfile
+import textwrap
 import types
 from typing import ContextManager
 from unittest import mock
@@ -51,6 +54,9 @@ def _ast_undump(dumped_ast: str) -> ast.AST:
   return eval(dumped_ast, vars(ast) | vars(builtins))  # pylint: disable=eval-used
 
 
+_INSTALLED_PATCHER_CONTEXTS = dict['ModuleASTPatcher', ContextManager[None]]()
+
+
 class ModuleASTPatcher(Callable[[], ContextManager[None]]):
   """Creates a patcher that applies a series of patches to a module.
 
@@ -65,33 +71,156 @@ class ModuleASTPatcher(Callable[[], ContextManager[None]]):
   For formatting convenience, the patcher will also accept a list of source
   blocks in alternating (before1, after1, before2, after2) order.
 
-  `patcher()` is then a context manager, to be used in a `with` statement, or
-  applied indefinitely with `patcher().__enter__().
+  The patcher may then be used as a `with patcher():` context manager, or using
+  `patcher.install()` or `patcher.install_clean()`. These are in increasing
+  order of robustness, and decreasing order of flexibility:
+    * the `patcher()` context manager is flexible and useful for prototyping or
+      debugging, but it changes and unchanges the target module, which isn't
+      threadsafe.
+    * `install_clean()` applies the patches on the target module as it's
+      imported, which ensures consistency but requires the module to be
+      specified as a string and not already imported.
+    * `install()` is between the two. It's threadsafe, and can be called at any
+      time by downstream code, but may occasionally produce incorrect results
+      due to aliasing by other modules.
+
+  NOTE: Patching a module on the source level may produce surprises additional
+  to those implicitly mentioned above:
+  1. If the target module is changed (e.g. via a version upgrade) then the patch
+  could fail to apply, or (worse) apply but with changed meaning depending on
+  the underlying code changes. Normally code maintainers will give consideration
+  to downstream code by being careful with changes to the interface (e.g., type
+  signatures), but will assume significant freedom in changing the
+  implementation if the resulting behaviour is unchanged. However, this will
+  still break patches, which depend on the implementation rather than the
+  interface -- so even careful maintainers are under no obligation not to break
+  patches.
+  2. If the target module member definitions change global state (e.g. by
+  registering themselves somewhere) then that state change will happen again
+  when the patch is applied.
   """
 
   def __init__(
       self,
-      module: types.ModuleType,
+      module: types.ModuleType | str,
       settings: PatchSettings = PatchSettings(),
       /,
       **patches_per_object: str | Sequence[str] | Sequence[tuple[str, str]],
   ):
+    self.module = module
+    self._settings = settings
+    self._patches_per_object = patches_per_object
+    self._updated_members = None
+    self._original_members = None
+    self._src = None
+    self._path = None
+    if not isinstance(self.module, str):
+      self._updated_members = self.updated_members
+
+  def install(self) -> None:
+    """Installs the patches on the target module.
+
+    This is a cleaner way of using the patcher than via `__call__`, because it
+    ensures code will subsequently always see the patched version of the module.
+
+    It's less clean than `install_clean`; in exchange it allows the install to
+    take place at some convenient time rather than necessarily having to precede
+    the import of the patched module.
+
+    However, transitioning between these different modes should be smooth -- you
+    may .install_clean(), then later .install(), and enter a __call__() context,
+    and the earlier things in this chain will turn the later ones into no-ops
+    (if using the same ModuleASTPatcher instance).
+    """
+    if self not in _INSTALLED_PATCHER_CONTEXTS:
+      context = self()
+      context.__enter__()
+      _INSTALLED_PATCHER_CONTEXTS[self] = context
+
+  def is_installed(self) -> bool:
+    """Returns whether the patcher is currently installed."""
+    return self in _INSTALLED_PATCHER_CONTEXTS
+
+  def install_clean(self) -> None:
+    """Installs the patches on top of the freshly-imported module.
+
+    This requires the module to be specified as a string, and will raise an
+    error if the module is already imported. The benefit is that this ensures
+    any other module that imports the patched module will get the patched
+    version, rather than e.g. aliasing some unpatched module members, leading to
+    subtle bugs.
+
+    Usage:
+      patcher = ModuleASTPatcher("some.fantastic.module", ...)
+      patcher.install_clean()
+    """
+    if not isinstance(self.module, str) or self.module in sys.modules:
+      raise ValueError(f'Module {self.module} already imported.')
+    self.install()
+
+  @contextlib.contextmanager
+  def __call__(self):
+    with contextlib.ExitStack() as stack:
+      if self not in _INSTALLED_PATCHER_CONTEXTS:
+        for name, value in self.updated_members.items():
+          stack.enter_context(mock.patch.object(self.module, name, value))
+      yield
+
+  @property
+  def updated_members(self) -> immutabledict.immutabledict[str, object]:
+    if self._updated_members is None:
+      self._setup()
+    self._updated_members: immutabledict.immutabledict[str, object]
+    return self._updated_members
+
+  @property
+  def original_members(self) -> immutabledict.immutabledict[str, object]:
+    if self._original_members is None:
+      self._setup()
+    self._original_members: immutabledict.immutabledict[str, object]
+    return self._original_members
+
+  @property
+  def src(self) -> str:
+    if self._src is None:
+      self._setup()
+    self._src: str
+    return self._src
+
+  @property
+  def path(self) -> str:
+    if self._path is None:
+      self._setup()
+    self._path: str
+    return self._path
+
+  def _setup(self):
+    """Sets up the patcher source and temporary file."""
+    if isinstance(self.module, str):
+      module_name = self.module
+      self.module = importlib.import_module(module_name)
+    else:
+      module_name = self.module.__name__
+    self._original_members = immutabledict.immutabledict(
+        {name: getattr(self.module, name) for name in self._patches_per_object}
+    )
     src_blocks = [
         'import sys',
         (
             '# Import existing members of target module into patcher module.\n'
-            f'globals().update(sys.modules[{module.__name__!r}].__dict__)'
+            f'globals().update(sys.modules[{module_name!r}].__dict__)'
         ),
     ]
-    allow_num_matches_upto = settings.allow_num_matches_upto or {}
-    if settings.prefix is not None:
-      src_blocks.append(settings.prefix)
-    for name in set(allow_num_matches_upto) - set(patches_per_object):
+    allow_num_matches_upto = self._settings.allow_num_matches_upto or {}
+    if self._settings.prefix is not None:
+      src_blocks.append(self._settings.prefix)
+    for name in set(allow_num_matches_upto) - set(self._patches_per_object):
       raise ValueError(
           f'Unpatched module member {name} in settings.allow_num_matches_upto'
       )
-    for name, patches in patches_per_object.items():
-      dumped_ast = ast.dump(ast.parse(inspect.getsource(getattr(module, name))))
+    for name, patches in self._patches_per_object.items():
+      target_src = inspect.getsource(getattr(self.module, name))
+      dumped_ast = ast.dump(ast.parse(target_src))
       iter_patches = iter(patches)
       for patch in iter_patches:
         if isinstance(patch, str):
@@ -100,7 +229,9 @@ class ModuleASTPatcher(Callable[[], ContextManager[None]]):
           before, after = patch, next(iter_patches)
         else:
           before, after = patch
-        before, after = ast.parse(before.strip()), ast.parse(after.strip())
+        before_src = textwrap.dedent(before).strip()
+        after_src = textwrap.dedent(after).strip()
+        before, after = ast.parse(before_src), ast.parse(after_src)
 
         match before.body, after.body:
           case [ast.Expr(before_value)], [ast.Expr(after_value)]:
@@ -118,32 +249,28 @@ class ModuleASTPatcher(Callable[[], ContextManager[None]]):
         num_matches = dumped_ast.count(before_dumped_ast)
         if not num_matches:
           raise ValueError(
-              f'No match for {before_dumped_ast} in'
-              f' {ast.dump(_ast_undump(dumped_ast), indent=2)}'
+              f'No match in the AST of {module_name}.{name} for the AST of'
+              f' ```\n{before_src}\n```. The target source is:'
+              f' ```\n{target_src}\n```.'
           )
         if num_matches > allow_num_matches_upto.get(name, 1):
           raise ValueError(
-              f'Too many matches for {before_dumped_ast} in'
-              f' {ast.dump(_ast_undump(dumped_ast), indent=2)}'
+              f'Too many matches in the AST of {module_name}.{name} for the AST'
+              f' of ```\n{before_src}\n```. The target source is:'
+              f' ```\n{target_src}\n```.'
           )
         dumped_ast = dumped_ast.replace(before_dumped_ast, after_dumped_ast)
       patched_ast = ast.fix_missing_locations(_ast_undump(dumped_ast))
       src_blocks.append(ast.unparse(patched_ast))
-    self.module = module
-    self.src = '\n\n'.join(src_blocks)
+    self._src = '\n\n'.join(src_blocks)
     # Create a file for stacktraces and debuggers to find source for patched
     # objects.
-    fd, self.path = tempfile.mkstemp(suffix='.py', text=True)
-    weakref.finalize(self, os.remove, self.path)
-    os.write(fd, self.src.encode())
+    fd, self._path = tempfile.mkstemp(
+        prefix=f'{module_name}.', suffix='.PATCHED.py', text=True
+    )
+    weakref.finalize(self, os.remove, self._path)
+    os.write(fd, self._src.encode())
     os.close(fd)
-    exec(compile(self.src, self.path, 'exec'), envt := {})  # pylint: disable=exec-used
-    updated_members = {name: envt[name] for name in patches_per_object}
-    self.updated_members = immutabledict.immutabledict(updated_members)
-
-  @contextlib.contextmanager
-  def __call__(self):
-    with contextlib.ExitStack() as stack:
-      for name, value in self.updated_members.items():
-        stack.enter_context(mock.patch.object(self.module, name, value))
-      yield
+    exec(compile(self._src, self._path, 'exec'), envt := {})  # pylint: disable=exec-used
+    updated_members = {name: envt[name] for name in self._patches_per_object}
+    self._updated_members = immutabledict.immutabledict(updated_members)

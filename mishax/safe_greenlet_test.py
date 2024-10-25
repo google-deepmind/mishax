@@ -306,6 +306,8 @@ class GeneratorMode(enum.Enum):
 
       return yield_from_glet
 
+    raise ValueError(f'Unknown generator mode: {self}')
+
 
 class GeneratorTest(parameterized.TestCase):
 

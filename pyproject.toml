@@ -19,7 +19,7 @@ classifiers = [
 dependencies = ["immutabledict", "greenlet"]
 
 [project.optional-dependencies]
-dev = ["jax", "jaxlib", "absl-py"]
+dev = ["jax", "jaxlib", "absl-py", "gemma@git+https://github.com/google-deepmind/gemma.git"]
 
 [project.urls]
 Homepage = "https://github.com/google-deepmind/mishax"

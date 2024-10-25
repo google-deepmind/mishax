@@ -13,8 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for ast_patcher."""
-
 import enum
 import sys
 
@@ -71,15 +69,21 @@ MODULE = sys.modules[__name__]
 
 class AstPatcherTest(parameterized.TestCase):
 
-  @parameterized.parameters([PlainClass.__name__, FancyClass.__name__])
-  def test_patch(self, cls_name):
+  @parameterized.product(
+      cls_name=[PlainClass.__name__, FancyClass.__name__], install=[True, False]
+  )
+  def test_patch(self, cls_name: str, install: bool):
     self.assertEqual(getattr(MODULE, cls_name).get_one().x, 2)
     global HIT_PATCH
-    self.assertFalse(HIT_PATCH)
+    HIT_PATCH = False
     patcher = ast_patcher.ModuleASTPatcher(
         MODULE,
         **{cls_name: ['x += 2', 'x += 2\nhit_patch()']},
     )
+    if install:
+      self.assertFalse(patcher.is_installed())
+      patcher.install()
+      self.assertTrue(patcher.is_installed())
     for i in range(2):
       with self.subTest(['first_time', 'reuse'][i]), patcher():
         self.assertEqual(getattr(MODULE, cls_name).get_one().x, 2)
@@ -87,7 +91,11 @@ class AstPatcherTest(parameterized.TestCase):
         HIT_PATCH = False
       with self.subTest('after ' + ['second_time', 'reuse'][i]):
         self.assertEqual(getattr(MODULE, cls_name).get_one().x, 2)
-        self.assertFalse(HIT_PATCH)
+        self.assertEqual(HIT_PATCH, install)
+    if install:
+      self.assertTrue(patcher.is_installed())
+      del ast_patcher._INSTALLED_PATCHER_CONTEXTS[patcher]
+      self.assertFalse(patcher.is_installed())
 
   def test_decorator_still_applied(self):
     orig_fancy_class = FancyClass
@@ -150,6 +158,40 @@ class AstPatcherTest(parameterized.TestCase):
     with patcher():
       self.assertEqual(getattr(MODULE, cls_name).get_one().sum_of_two_xs(), 6)
 
+  def test_install_clean(self):
+    patcher = ast_patcher.ModuleASTPatcher(
+        'mishax.safe_greenlet',
+        ast_patcher.PatchSettings(allow_num_matches_upto=dict(yield_=2)),
+        yield_=['default', '"peekaboo"'],
+    )
+    patcher.install_clean()
+
+    from mishax import safe_greenlet  # pylint: disable=g-import-not-at-top
+
+    transient_patcher = ast_patcher.ModuleASTPatcher(
+        'mishax.safe_greenlet',
+        ast_patcher.PatchSettings(allow_num_matches_upto=dict(yield_=2)),
+        yield_=['"peekaboo"', '"THUMP"'],
+    )
+
+    with self.subTest('plain'):
+      self.assertEqual(safe_greenlet.yield_(), 'peekaboo')
+
+    with self.subTest('with_context'), transient_patcher():
+      self.assertEqual(safe_greenlet.yield_(), 'THUMP')
+
+    with self.subTest('after_context'):
+      self.assertEqual(safe_greenlet.yield_(), 'peekaboo')
+
+    patcher.install()
+    with self.subTest('after_install'):
+      self.assertEqual(safe_greenlet.yield_(), 'peekaboo')
+
+    with self.subTest('after_install_with_context'), transient_patcher():
+      self.assertEqual(safe_greenlet.yield_(), 'THUMP')
+
+    with self.subTest('after_install_and_context'):
+      self.assertEqual(safe_greenlet.yield_(), 'peekaboo')
 
 if __name__ == '__main__':
   absltest.main()

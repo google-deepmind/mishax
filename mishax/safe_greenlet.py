@@ -176,6 +176,8 @@ def yield_(*args, default: Any = _NOT_PROVIDED) -> Any:
 def easy_greenlet(
     run: Callable[..., _ReturnT] | None = None,
 ) -> ContextManager['EasyGenerator[Any, Any, _ReturnT]']:
+  """Run `run` in a SafeGreenlet, wrapped in an EasyGenerator for convenience."""
+
   @contextlib.contextmanager
   def wrapped():
     # `ctx` passed so the greenlet owns a reference to the context, keeping it
@@ -277,7 +279,7 @@ class EasyGenerator(Generator[_YieldT, _SendT, _ReturnT]):
   to send values and get the final returned value, by specifying `gen.sendval`
   and reading `gen.retval`, which can work with a regular loop.
   """
-  sendval: _SendT | None = None
+  sendval: _SendT = None
   retval: _ReturnT | None = None
 
   def __init__(self, inner_gen: Generator[_YieldT, _SendT, _ReturnT]):

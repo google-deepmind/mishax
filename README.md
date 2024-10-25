@@ -8,6 +8,10 @@ Mishax is a utility library for mechanistic interpretability research, with its 
 
 `mishax.safe_greenlet`, given a complicated function `f` that allows running arbitrary callbacks somewhere deep inside (e.g. using Flax’s `intercept_methods`), enables transforming it into an ordinary-looking Python `for` loop that iterates over internal values and allows them to be replaced with other values. Behind the scenes, this will run `f` in a kind of separate “thread” –- but the user can mostly ignore that, and use the loop to read and write representations into the model during a forward pass, in a way that interoperates well with the rest of JAX.
 
+### Note
+
+`ast_patcher` relies on code transformations of the target code, which violates some usual abstractions. Careless use may reduce codebase maintainability -- AST patching is best deployed in moderation and with care. For more details, see the `ModuleASTPatcher` docstring.
+
 ## Setup
 
 ```shell
