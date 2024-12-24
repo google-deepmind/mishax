@@ -8,6 +8,8 @@ Mishax is a utility library for mechanistic interpretability research, with its 
 
 `mishax.safe_greenlet`, given a complicated function `f` that allows running arbitrary callbacks somewhere deep inside (e.g. using Flax’s `intercept_methods`), enables transforming it into an ordinary-looking Python `for` loop that iterates over internal values and allows them to be replaced with other values. Behind the scenes, this will run `f` in a kind of separate “thread” –- but the user can mostly ignore that, and use the loop to read and write representations into the model during a forward pass, in a way that interoperates well with the rest of JAX.
 
+In `mishax.examples.gemma` you can find an example of instrumenting an LLM codebase; it's pointed at the https://github.com/google-deepmind/gemma reference implementation of Gemma.
+
 ### Note
 
 `ast_patcher` relies on code transformations of the target code, which violates some usual abstractions. Careless use may reduce codebase maintainability -- AST patching is best deployed in moderation and with care. For more details, see the `ModuleASTPatcher` docstring.
@@ -20,6 +22,14 @@ source $HOME/mishax-venv/bin/activate
 python3 -m pip install git+git://github.com/google-deepmind/mishax.git
 ```
 
+With deps for the Gemma example:
+
+```shell
+python3 -m venv $HOME/mishax-venv
+source $HOME/mishax-venv/bin/activate
+python3 -m pip install git+git://github.com/google-deepmind/mishax.git[gemma]
+```
+
 To deactivate the virtual environment, run `deactivate`.
 
 ## Run tests
@@ -29,6 +39,7 @@ source $HOME/mishax-venv/bin/activate
 python3 -m pip install git+git://github.com/google-deepmind/mishax.git[dev]
 python3 -m mishax.ast_patcher_test
 python3 -m mishax.safe_greenlet_test
+python3 -m mishax.examples.gemma_test
 ```
 
 ## Colab Tutorial

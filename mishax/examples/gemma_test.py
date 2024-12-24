@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import weakref
 from absl.testing import absltest
 from absl.testing import parameterized
 from flax import linen as nn
@@ -100,31 +101,93 @@ class GemmaTest(parameterized.TestCase):
       for layer in range(CONFIG.num_layers) if site.is_layer_site() else [None]:
         self.site_visits_if_once.append((layer, site))
 
+  @parameterized.parameters(
+      dict(use_cache=True, attn_mask=ATTENTION_MASK),
+      dict(use_cache=False, attn_mask=ATTENTION_MASK[..., :SEQ_SIZE]),
+  )
+  @jax.numpy_rank_promotion('raise')
+  @jax.checking_leaks()
+  def test_iterate_through_unjitted_activations_and_intervene(
+      self,
+      use_cache: bool,
+      attn_mask: np.ndarray,
+  ):
+    with safe_greenlet.easy_greenlet(
+        lambda: MODEL.apply(
+            self.params
+            | gemma.vars_from_callback(gemma.GreenletYield(), MODEL),
+            TOKEN_INPUT,
+            self.positions,
+            self.empty_cache if use_cache else None,
+            attn_mask,
+            mutable=True,
+        ),
+    ) as run:
+      keys_0 = None
+      keys_0_ref = None
+      found_activations = []
+      for layer, site, value in run:
+        # We make 3 interventions: replacing layer 1 keys with layer 0 keys,
+        # replacing layer 1 attention outputs with zeros, and sending back the
+        # unmodified final residuals to verify there's no tracer leak.
+        match layer, site:
+          case 0, (gemma.Site.KEYS):
+            keys_0 = value
+            keys_0_ref = weakref.ref(keys_0)
+          case 1, (gemma.Site.KEYS):
+            run.sendval = keys_0
+          case 1, (gemma.Site.ATTN_OUTPUT_PRE_LINEAR):
+            run.sendval = jnp.zeros_like(value)
+          case None, (gemma.Site.FINAL_RESIDUAL_POST_LAYERNORM):
+            run.sendval = value
+        found_activations.append((layer, site))
+    self.assertCountEqual(found_activations, self.site_visits_if_once)
+
+    keys_0 = jax.device_get(keys_0)
+    self.assertIsNotNone(keys_0_ref())
+
+    acts = run.retval[1][gemma.ACTIVATIONS]
+    for path, acts_for_site_and_layer in jax.tree.leaves_with_path(
+        acts, is_leaf=lambda x: isinstance(x, tuple)
+    ):
+      self.assertLen(acts_for_site_and_layer, 1, path)
+
+    np.testing.assert_array_equal(
+        keys_0, acts['layer_0']['attn'][gemma.Site.KEYS][0]
+    )
+
+    acts_keys_0 = acts['layer_0']['attn'][gemma.Site.KEYS][0]
+    acts_keys_1 = acts['layer_1']['attn'][gemma.Site.KEYS][0]
+    np.testing.assert_array_equal(
+        acts_keys_0,
+        acts_keys_1,
+        'Expected layer 1 keys to be replaced with layer 0 keys.',
+    )
+
+    acts_attn_output_1 = acts['layer_1'][gemma.Site.ATTN_OUTPUT][0]
+    self.assertEqual(
+        jnp.abs(acts_attn_output_1).max(),
+        0,
+        'Expected zero attention outputs in layer 1 after injecting'
+        ' zeros before the linear attention output.',
+    )
+
   @parameterized.product(
       [
           dict(
-              model=MODEL,
-              visits_per_site=1,
-              can_fetch_generated_values=True,
-              mutable=True,
-          ),
-          dict(
               model=JIT_MODEL,
               visits_per_site=1,
-              can_fetch_generated_values=False,
               mutable=True,
           ),
           dict(
               model=CALL_JIT_TRANSFORMER_THRICE,
               visits_per_site=3,
-              can_fetch_generated_values=False,
               mutable=True,
           ),
           # Test with mutable=False to encourage jit cache hits.
           dict(
               model=CALL_JIT_TRANSFORMER_THRICE,
               visits_per_site=3,
-              can_fetch_generated_values=False,
               mutable=False,
           ),
       ],
@@ -135,11 +198,10 @@ class GemmaTest(parameterized.TestCase):
   )
   @jax.numpy_rank_promotion('raise')
   @jax.checking_leaks()
-  def test_iterate_through_activations_and_intervene(
+  def test_iterate_through_jitted_activations_and_intervene(
       self,
       model,
       visits_per_site: int,
-      can_fetch_generated_values: bool,
       use_cache: bool,
       mutable: bool,
       attn_mask: np.ndarray,
@@ -157,6 +219,7 @@ class GemmaTest(parameterized.TestCase):
     ) as run:
 
       keys_0 = None
+      keys_0_ref = None
       found_activations = []
       for layer, site, value in run:
         # We make 3 interventions: replacing layer 1 keys with layer 0 keys,
@@ -165,23 +228,23 @@ class GemmaTest(parameterized.TestCase):
         match layer, site:
           case 0, (gemma.Site.KEYS):
             keys_0 = value
+            keys_0_ref = weakref.ref(keys_0)
           case 1, (gemma.Site.KEYS):
             run.sendval = keys_0
+            # Necessary to avoid a tracer leak.
+            keys_0 = None
           case 1, (gemma.Site.ATTN_OUTPUT_PRE_LINEAR):
             run.sendval = jnp.zeros_like(value)
           case None, (gemma.Site.FINAL_RESIDUAL_POST_LAYERNORM):
-            # Make sure it's not a weakref.
-            run.sendval = value + 0
+            run.sendval = value
+        # Necessary to avoid a tracer leak.
+        del value
         found_activations.append((layer, site))
     self.assertCountEqual(
         found_activations, self.site_visits_if_once * visits_per_site
     )
 
-    if can_fetch_generated_values:
-      keys_0 = jax.device_get(keys_0)
-    else:
-      with self.assertRaises(ReferenceError):
-        keys_0 = jax.device_get(keys_0)
+    self.assertIsNone(keys_0_ref())
 
     if not mutable:
       self.assertNotIn(gemma.ACTIVATIONS, run.retval[1])
@@ -192,11 +255,6 @@ class GemmaTest(parameterized.TestCase):
         acts, is_leaf=lambda x: isinstance(x, tuple)
     ):
       self.assertLen(acts_for_site_and_layer, visits_per_site, path)
-
-    if can_fetch_generated_values:
-      np.testing.assert_array_equal(
-          keys_0, acts['layer_0']['attn'][gemma.Site.KEYS][0]
-      )
 
     acts_keys_0 = acts['layer_0']['attn'][gemma.Site.KEYS][0]
     acts_keys_1 = acts['layer_1']['attn'][gemma.Site.KEYS][0]

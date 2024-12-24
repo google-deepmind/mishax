@@ -23,7 +23,6 @@ import enum
 import itertools
 import typing
 from typing import Any, Self, Iterable, TypeAlias
-import weakref
 from flax import linen as nn
 from flax import struct
 from flax import traverse_util
@@ -252,21 +251,19 @@ def vars_from_callback(callback: Callback, model: 'transformer.Transformer'):
 
 @jax.tree_util.register_pytree_with_keys_class
 class GreenletYield(Callback):
-  """Callback that yields values to parent greenlet, with layer and site info."""
+  """Callback that yields values to parent greenlet, with layer and site info.
+
+  This class is registered as a pytree in such a way that the treedef is
+  different every time `flatten` is called, to avoid caching.
+
+  NOTE: If the callback is called with a jax.core.Tracer then this can produce
+  tracer leaks; these can be debugged using `jax.checking_leaks()`, but that may
+  find false positives if using easy_greenlet, via the loop variable. To fix
+  these, `del` the activation in the loop variable after using it in the loop.
+  """
 
   def __call__(self, layer: int | None, site: Site, value: jax.Array):
-    if isinstance(value, jax.core.Tracer):
-      # Yield a proxy. Why? Because the yielded value becomes a loop variable,
-      # which produces tracer leaks once the loop ends unless it's a weak proxy.
-      value = weakref.proxy(value)
-
-    retval = safe_greenlet.yield_(layer, site, value)
-
-    if isinstance(retval, weakref.ProxyType):
-      # If the user reasonably sends us back a weakref value yielded earlier,
-      # we need to unwrap it; binding a method like `sum` implicitly unwraps.
-      retval = retval.sum.__self__
-    return retval
+    return safe_greenlet.yield_(layer, site, value)
 
   def __init__(self):
     self._counter = itertools.count()
