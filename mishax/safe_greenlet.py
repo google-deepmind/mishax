@@ -125,9 +125,10 @@ conveniences as well.
 from collections.abc import Callable, Generator, Iterable, Iterator
 import contextlib
 import contextvars
+import dataclasses
 import functools
 import typing
-from typing import Any, ContextManager, TypeVar
+from typing import Any, ContextManager, Generic, TypeVar
 import weakref
 
 import greenlet
@@ -159,6 +160,25 @@ class _Sentinel:
 _NOT_PROVIDED = _Sentinel()
 
 
+@dataclasses.dataclass(slots=True)
+class _BoxedSendVal(Generic[_SendT]):
+  """A box for enabling the EasyGenerator avoid_sendval_refs=True behaviour."""
+  value: _SendT | None
+
+  def __post_init__(self):
+    if self.value is None:
+      raise ValueError("Can't box a None value!")
+
+  @staticmethod
+  def pop_if_boxed(sendval: '_BoxedSendVal[_SendT] | _SendT') -> _SendT:
+    if isinstance(sendval, _BoxedSendVal):
+      box, sendval = sendval, sendval.value
+      if box.value is None:
+        raise RuntimeError('Boxed sendval has already been popped!')
+      box.value = None
+    return sendval
+
+
 def yield_(*args, default: Any = _NOT_PROVIDED) -> Any:
   if parent := getparent():
     # Why switch rather than send? 2 reasons.
@@ -166,27 +186,71 @@ def yield_(*args, default: Any = _NOT_PROVIDED) -> Any:
     # 2. The semantics only differs if parent isn't started (impossible) or if
     #    parent is finishing (which means this greenlet will be killed rather
     #    than receiving another value).
-    return parent.switch(*args if args else [None])
+    return _BoxedSendVal.pop_if_boxed(parent.switch(*args if args else [None]))
   # We're in the main greenlet, with no parent.
   if default is _NOT_PROVIDED:
     raise RuntimeError('`yield_` called without default from main greenlet!')
   return default
 
 
-def easy_greenlet(
-    run: Callable[..., _ReturnT] | None = None,
-) -> ContextManager['EasyGenerator[Any, Any, _ReturnT]']:
-  """Run `run` in a SafeGreenlet, wrapped in an EasyGenerator for convenience."""
+def _reachable_progeny(glet: greenlet.greenlet) -> Iterator['SafeGreenlet']:
+  while (
+      (context := glet.gr_context)
+      and (glet_ref := context.get(_REACHABLE_CHILD)) is not None
+      and (glet := glet_ref()) is not None
+  ):
+    yield glet
 
-  @contextlib.contextmanager
-  def wrapped():
-    # `ctx` passed so the greenlet owns a reference to the context, keeping it
-    # from getting GC-d prematurely.
-    with SafeGreenlet(lambda ctx=ctx: run()) as glet:
-      yield EasyGenerator(glet)
 
-  ctx = wrapped()
-  return ctx
+def _lineage(glet: greenlet.greenlet) -> Iterator[greenlet.greenlet]:
+  yield glet
+  while glet := glet.parent:
+    yield glet
+
+
+def _close_and_reopen_local_context_managers():
+  if ctxs := _LOCAL_CONTEXTS.get(None):
+    retval = contextlib.ExitStack()
+    for ctx in ctxs[::-1]:
+      retval.enter_context(ctx.close_temporarily())
+    return retval
+  return contextlib.nullcontext()
+
+
+def _managed_switch(
+    glet: greenlet.greenlet, switch_or_throw_method, *args, **kwargs
+) -> Any:
+  """Runs the given method call, with safety checks and local context switching."""
+  # Ensure SafeGreenlet context is open.
+  if isinstance(glet, SafeGreenlet) and glet._context_token is None:  # pylint: disable=protected-access
+    raise RuntimeError('Target greenlet is outside its context!')
+  current = getcurrent()
+  # If no SafeGreenlets involved, fall through to normal greenlet behaviour.
+  if not (isinstance(glet, SafeGreenlet) or isinstance(current, SafeGreenlet)):
+    return switch_or_throw_method(*args, **kwargs)
+  # Enforce reachability constraint.
+  if not (glet in _reachable_progeny(current) or glet in _lineage(current)):
+    raise RuntimeError('Target greenlet is not reachable!')
+  with _close_and_reopen_local_context_managers():
+    try:
+      retval = switch_or_throw_method(*args, **kwargs)
+    except StopIteration as e:
+      raise RuntimeError(
+          'Raising StopIteration in a generator is not permitted, see PEP 749.'
+      ) from e
+    else:
+      if not glet:
+        raise StopIteration(retval)
+      return retval
+
+
+_main_glet = getcurrent()
+_main_glet.switch = functools.partial(
+    _managed_switch, _main_glet, greenlet.greenlet.switch, _main_glet
+)
+_main_glet.throw = functools.partial(
+    _managed_switch, _main_glet, greenlet.greenlet.throw, _main_glet
+)
 
 
 class SafeGreenlet(greenlet.greenlet, Generator[_YieldT, _SendT, _ReturnT]):
@@ -278,12 +342,24 @@ class EasyGenerator(Generator[_YieldT, _SendT, _ReturnT]):
   The wrapper has the same behaviour as `inner_gen`, but with an alternative way
   to send values and get the final returned value, by specifying `gen.sendval`
   and reading `gen.retval`, which can work with a regular loop.
+
+  Additionally, `avoid_sendval_refs=True` (the default) ensures that when the
+  sendval is conveyed to the inner generator, which is using `yield_` to receive
+  it, then no additional references to the sendval remain; this differs from
+  standard generator behaviour, but is necessary to avoid tricky false positives
+  from the JAX tracer leak checker. The default behaviour can be regained by
+  setting `avoid_sendval_refs=False`.
   """
   sendval: _SendT = None
   retval: _ReturnT | None = None
 
-  def __init__(self, inner_gen: Generator[_YieldT, _SendT, _ReturnT]):
+  def __init__(
+      self,
+      inner_gen: Generator[_YieldT, _SendT, _ReturnT],
+      avoid_sendval_refs: bool = True,
+  ):
     self.inner_gen = inner_gen
+    self.avoid_sendval_refs = avoid_sendval_refs
 
   @contextlib.contextmanager
   def _reset_sendval_and_capture_retval(self) -> Iterator[None]:
@@ -296,6 +372,10 @@ class EasyGenerator(Generator[_YieldT, _SendT, _ReturnT]):
 
   def send(self, value: _SendT) -> _YieldT:
     with self._reset_sendval_and_capture_retval():
+      if self.avoid_sendval_refs and value is not None:
+        # If `value` is None then 1. boxing isn't needed, and 2. the generator
+        # may be at the start, erroring if it receives anything besides None.
+        value = _BoxedSendVal(value)
       return self.inner_gen.send(value)
 
   def __next__(self) -> _YieldT:
@@ -307,6 +387,23 @@ class EasyGenerator(Generator[_YieldT, _SendT, _ReturnT]):
 
   def close(self) -> None:
     return self.inner_gen.close()
+
+
+def easy_greenlet(
+    run: Callable[..., _ReturnT] | None = None,
+    avoid_sendval_refs: bool = True,
+) -> ContextManager['EasyGenerator[Any, Any, _ReturnT]']:
+  """Run `run` in a SafeGreenlet, wrapped in an EasyGenerator for convenience."""
+
+  @contextlib.contextmanager
+  def wrapped():
+    # `ctx` passed so the greenlet owns a reference to the context, keeping it
+    # from getting GC-d prematurely.
+    with SafeGreenlet(lambda ctx=ctx: run()) as glet:
+      yield EasyGenerator(glet, avoid_sendval_refs=avoid_sendval_refs)
+
+  ctx = wrapped()
+  return ctx
 
 
 class LocalContextManager(ContextManager[Any]):
@@ -429,63 +526,3 @@ def yield_from(
             value_to_yield = iterator.send(value_to_send)  # pytype: disable=attribute-error
         except StopIteration as stop_it:
           return stop_it.value
-
-
-def _reachable_progeny(glet: greenlet.greenlet) -> Iterator[SafeGreenlet]:
-  while (
-      (context := glet.gr_context)
-      and (glet_ref := context.get(_REACHABLE_CHILD)) is not None
-      and (glet := glet_ref()) is not None
-  ):
-    yield glet
-
-
-def _lineage(glet: greenlet.greenlet) -> Iterator[greenlet.greenlet]:
-  yield glet
-  while glet := glet.parent:
-    yield glet
-
-
-def _managed_switch(
-    glet: greenlet.greenlet, switch_or_throw_method, *args, **kwargs
-) -> Any:
-  """Runs the given method call, with safety checks and local context switching."""
-  # Ensure SafeGreenlet context is open.
-  if isinstance(glet, SafeGreenlet) and glet._context_token is None:  # pylint: disable=protected-access
-    raise RuntimeError('Target greenlet is outside its context!')
-  current = getcurrent()
-  # If no SafeGreenlets involved, fall through to normal greenlet behaviour.
-  if not (isinstance(glet, SafeGreenlet) or isinstance(current, SafeGreenlet)):
-    return switch_or_throw_method(*args, **kwargs)
-  # Enforce reachability constraint.
-  if not (glet in _reachable_progeny(current) or glet in _lineage(current)):
-    raise RuntimeError('Target greenlet is not reachable!')
-  with _close_and_reopen_local_context_managers():
-    try:
-      retval = switch_or_throw_method(*args, **kwargs)
-    except StopIteration as e:
-      raise RuntimeError(
-          'Raising StopIteration in a generator is not permitted, see PEP 749.'
-      ) from e
-    else:
-      if not glet:
-        raise StopIteration(retval)
-      return retval
-
-
-def _close_and_reopen_local_context_managers():
-  if ctxs := _LOCAL_CONTEXTS.get(None):
-    retval = contextlib.ExitStack()
-    for ctx in ctxs[::-1]:
-      retval.enter_context(ctx.close_temporarily())
-    return retval
-  return contextlib.nullcontext()
-
-
-_main_glet = getcurrent()
-_main_glet.switch = functools.partial(
-    _managed_switch, _main_glet, greenlet.greenlet.switch, _main_glet
-)
-_main_glet.throw = functools.partial(
-    _managed_switch, _main_glet, greenlet.greenlet.throw, _main_glet
-)

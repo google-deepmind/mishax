@@ -20,6 +20,7 @@ import functools
 import gc
 import random
 from typing import Any
+import weakref
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -262,8 +263,12 @@ class GeneratorMode(enum.Enum):
   YIELD_FROM_GLET = enum.auto()
   # Yield from generator inside a SafeGreenlet.
   YIELD_FROM_AS_GLET = enum.auto()
-  # Run with the `easy_greenlet` wrapper.
+  # Run with the `easy_greenlet` wrapper, with `avoid_sendval_refs=False`.
   EASY_GLET = enum.auto()
+  # Run with the `easy_greenlet` wrapper, with `avoid_sendval_refs=True`; this
+  # differs slightly from the other modes, in that they keep a reference to the
+  # sendval that's sent to the inner generator.
+  EASY_GLET_AVOID_SENDVAL_REFS = enum.auto()
 
   def make_generator_fn(
       self,
@@ -291,8 +296,13 @@ class GeneratorMode(enum.Enum):
       run_yield_from = lambda: safe_greenlet.yield_from(gen_fn())
       return lambda: safe_greenlet.SafeGreenlet(run_yield_from).__enter__()
 
-    if self == GeneratorMode.EASY_GLET:
+    if self == GeneratorMode.EASY_GLET_AVOID_SENDVAL_REFS:
       return lambda: safe_greenlet.easy_greenlet(glet_run).__enter__()
+
+    if self == GeneratorMode.EASY_GLET:
+      return lambda: safe_greenlet.easy_greenlet(
+          glet_run, avoid_sendval_refs=False
+      ).__enter__()
 
     glet_fn = lambda: safe_greenlet.SafeGreenlet(glet_run).__enter__()
     if self == GeneratorMode.GLET:
@@ -307,6 +317,10 @@ class GeneratorMode(enum.Enum):
       return yield_from_glet
 
     raise ValueError(f'Unknown generator mode: {self}')
+
+
+class _C:
+  pass
 
 
 class GeneratorTest(parameterized.TestCase):
@@ -474,6 +488,32 @@ class GeneratorTest(parameterized.TestCase):
         next(generator)
 
     self.subtest_with_start(iterate)
+
+  @parameterized.parameters(GeneratorMode)
+  def test_generator_holds_onto_sendval_unless_boxed(self, generator_mode):
+    state = []
+
+    def finalize_and_check_state(sendval):
+      weakref.finalize(sendval, lambda: state.append('finalized'))
+      del sendval
+      if generator_mode == GeneratorMode.EASY_GLET_AVOID_SENDVAL_REFS:
+        self.assertSequenceEqual(state, ['finalized'])
+      else:
+        self.assertEmpty(state)
+
+    def gen_fn():
+      finalize_and_check_state((yield))
+    glet_run = lambda: finalize_and_check_state(safe_greenlet.yield_())
+
+    self.set_up_helpers(generator_mode, gen_fn, glet_run)
+
+    def iterate_send_obj(generator):
+      self.assertIsNone(next(generator))
+      with self.assertRaises(StopIteration):
+        generator.send(_C())
+      self.assertSequenceEqual(state, ['finalized'])
+
+    self.subtest_with_start(iterate_send_obj)
 
   @parameterized.parameters(GeneratorMode)
   def test_error_catching_generators(self, generator_mode):

@@ -159,8 +159,9 @@ class GemmaTest(parameterized.TestCase):
       keys_0 = None
       found_activations = []
       for layer, site, value in run:
-        # We make 2 interventions: replacing layer 1 keys with layer 0 keys,
-        # and replacing layer 1 attention outputs with zeros.
+        # We make 3 interventions: replacing layer 1 keys with layer 0 keys,
+        # replacing layer 1 attention outputs with zeros, and sending back the
+        # unmodified final residuals to verify there's no tracer leak.
         match layer, site:
           case 0, (gemma.Site.KEYS):
             keys_0 = value
@@ -168,6 +169,9 @@ class GemmaTest(parameterized.TestCase):
             run.sendval = keys_0
           case 1, (gemma.Site.ATTN_OUTPUT_PRE_LINEAR):
             run.sendval = jnp.zeros_like(value)
+          case None, (gemma.Site.FINAL_RESIDUAL_POST_LAYERNORM):
+            # Make sure it's not a weakref.
+            run.sendval = value + 0
         found_activations.append((layer, site))
     self.assertCountEqual(
         found_activations, self.site_visits_if_once * visits_per_site
