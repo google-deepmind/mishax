@@ -132,14 +132,13 @@ MODULES_PATCHER = ast_patcher.ModuleASTPatcher(
         """,
     ],
     FeedForward=[
-        # mlp_hidden
-        'nn.gelu(ff_gate)',
-        'nn.gelu(tag(self, Site.MLP_HIDDEN, ff_gate))',
-        # mlp_hidden_pre_gate, mlp_post_activation
-        'activations = gate_value * ff1',
+        # mlp_hidden, mlp_hidden_pre_gate, mlp_post_activation
+        'activations = nn.gelu(gate[..., 0, :]) * gate[..., 1, :]',
         """
-        ff1 = tag(self, Site.MLP_HIDDEN_PRE_GATE, ff1)
-        activations = tag(self, Site.MLP_POST_ACTIVATION, gate_value * ff1)
+        activations = nn.gelu(
+            tag(self, Site.MLP_HIDDEN, gate[..., 0, :])
+        ) * tag(self, Site.MLP_HIDDEN_PRE_GATE, gate[..., 1, :])
+        activations = tag(self, Site.MLP_POST_ACTIVATION, activations)
         """,
     ],
     Block=[
