@@ -45,4 +45,4 @@ python3 -m mishax.examples.gemma_test
 ## Colab Tutorial
 
 A colab notebook demonstrating how to instrument Gemma internals with mishax
-is available here: [colab link](https://colab.research.google.com/drive/1kKkQJvrsWVI5-VfaQ8M_itQVm3goaxkM)
+is available here: [colab link](https://colab.research.google.com/drive/1rP2cgyx0wXjVt72db7dL1la0VqUaMu0S#revisionId=0Bxemsxg8RNFNekR6VFh3MnhmRjd3QUhKSlN0cnk1YVBVeHRZPQ)
