@@ -104,9 +104,15 @@ MODULES_PATCHER = ast_patcher.ModuleASTPatcher(
         attn_output = self.attn_vec_einsum("BTNH,NHD->BTD", encoded)
         """,
         # keys, values
-        'key_proj = positional_embeddings.apply_rope(key_proj, segment_pos)',
         """
-        key_proj = positional_embeddings.apply_rope(key_proj, segment_pos)
+        key_proj = positional_embeddings.apply_rope(
+            key_proj, segment_pos, base_frequency=self.rope_base_frequency
+        )
+        """,
+        """
+        key_proj = positional_embeddings.apply_rope(
+            key_proj, segment_pos, base_frequency=self.rope_base_frequency
+        )
         key_proj = tag(self, Site.KEYS, key_proj)
         value_proj = tag(self, Site.VALUES, value_proj)
         """,
