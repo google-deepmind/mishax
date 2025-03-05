@@ -49,6 +49,10 @@ class PatchSettings:
   allow_num_matches_upto: Mapping[str, int] | None = None
 
 
+class PatchError(ValueError):
+  """Raised when patches don't match the target source."""
+
+
 def _ast_undump(dumped_ast: str) -> ast.AST:
   """Inverse of ast.dump."""
   return eval(dumped_ast, vars(ast) | vars(builtins))  # pylint: disable=eval-used
@@ -248,13 +252,13 @@ class ModuleASTPatcher(Callable[[], ContextManager[None]]):
             after_dumped_ast = ', '.join(map(ast.dump, after.body))
         num_matches = dumped_ast.count(before_dumped_ast)
         if not num_matches:
-          raise ValueError(
+          raise PatchError(
               f'No match in the AST of {module_name}.{name} for the AST of'
               f' ```\n{before_src}\n```. The target source is:'
               f' ```\n{target_src}\n```.'
           )
         if num_matches > allow_num_matches_upto.get(name, 1):
-          raise ValueError(
+          raise PatchError(
               f'Too many matches in the AST of {module_name}.{name} for the AST'
               f' of ```\n{before_src}\n```. The target source is:'
               f' ```\n{target_src}\n```.'
