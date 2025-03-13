@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 jobs:
-  test:
+  mishax-test:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -37,6 +37,31 @@ jobs:
 
     - name: Run safe_greenlet tests
       run: python -m mishax.safe_greenlet_test
+
+  gemma-test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ['3.11', '3.12']
+
+    steps:
+
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+
+    - name: Install Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        allow-prereleases: true
+
+    - uses: lukka/get-cmake@latest
+
+    - name: Install Mishax with gemma dependencies
+      run: pip install -e '.[gemma]'
 
     - name: Run gemma example tests
       run: python -m mishax.examples.gemma_test

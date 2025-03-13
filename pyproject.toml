@@ -20,7 +20,7 @@ dependencies = ["immutabledict", "greenlet"]
 
 [project.optional-dependencies]
 gemma = ["jax", "jaxlib", "absl-py", "gemma@git+https://github.com/google-deepmind/gemma.git"]
-dev = ["jax", "jaxlib", "gemma@git+https://github.com/google-deepmind/gemma.git"]
+dev = ["jax", "jaxlib", "absl-py"]
 
 [project.urls]
 Homepage = "https://github.com/google-deepmind/mishax"
