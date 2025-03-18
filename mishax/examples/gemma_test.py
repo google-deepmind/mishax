@@ -24,9 +24,27 @@ from mishax.examples import gemma
 import numpy as np
 
 gemma.install_clean()
+# pylint: disable=g-bad-import-order
+from gemma import gm  # pylint: disable=g-import-not-at-top
+from gemma import modules
+from gemma import transformer
 
-from gemma import modules  # pylint: disable=g-import-not-at-top,g-bad-import-order
-from gemma import transformer  # pylint: disable=g-bad-import-order
+
+class Transformer(transformer.Transformer):
+  """Transformer, removing the error from the base class's __post_init__.
+
+  Why do we do this? Because this test module is still using the deprecated
+  `transformer.Transformer` class. The replacement gemma.gm.nn.Transformer
+  isn't quite drop-in; it's a wrapper that's worse for some of the things tested
+  in this file, such as the distinction between jitted and unjitted models
+  (because it already jits its __call__ method).
+
+  NOTE: This may be temporary, e.g. it'll no longer be appropriate if
+  gm.nn.Transformer stops extending transformer.Transformer.
+  """
+
+  def __post_init__(self):
+    return super(transformer.Transformer, self).__post_init__()
 
 
 CONFIG = transformer.TransformerConfig(
@@ -54,7 +72,7 @@ class CallJitTransformerThrice(nn.Module):
   The __call__ method calls the underlying jitted transformer 3 times; this is
   needed to get cache hits.
   """
-  submodel: nn.jit(transformer.Transformer)
+  submodel: nn.jit(Transformer)
 
   @property
   def config(self):
@@ -68,11 +86,11 @@ class CallJitTransformerThrice(nn.Module):
     return [self.submodel(*args, **kwargs) for _ in range(3)]
 
 
-MODEL = transformer.Transformer(CONFIG)
-JIT_MODEL = nn.jit(transformer.Transformer)(CONFIG)
+MODEL = Transformer(CONFIG)
+JIT_MODEL = nn.jit(Transformer)(CONFIG)
 CALL_JIT_TRANSFORMER_THRICE = CallJitTransformerThrice(JIT_MODEL)
 UNINSTRUMENTED_MODEL = gemma.TRANSFORMER_PATCHER.original_members[
-    transformer.Transformer.__name__
+    Transformer.__name__
 ](CONFIG)
 
 BATCH_SIZE = 1
@@ -281,6 +299,9 @@ class GemmaTest(parameterized.TestCase):
       gemma.vars_from_callback(
           callback=gemma.GreenletYield(), model=UNINSTRUMENTED_MODEL
       )
+
+  def test_base_transformer_still_in_use(self):
+    self.assertTrue(gm.nn.Transformer, transformer.Transformer)
 
 
 if __name__ == '__main__':
