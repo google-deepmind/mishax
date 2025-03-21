@@ -171,6 +171,10 @@ class ModuleASTPatcher(Callable[[], ContextManager[None]]):
       yield
 
   @property
+  def module_name(self) -> str:
+    return self.module if isinstance(self.module, str) else self.module.__name__
+
+  @property
   def updated_members(self) -> immutabledict.immutabledict[str, object]:
     if self._updated_members is None:
       self._setup()
