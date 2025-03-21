@@ -237,12 +237,17 @@ class ModuleASTPatcher(Callable[[], ContextManager[None]]):
         after_src = textwrap.dedent(after).strip()
         before, after = ast.parse(before_src), ast.parse(after_src)
 
-        match before.body, after.body:
-          case [ast.Expr(before_value)], [ast.Expr(after_value)]:
+        match before.body:
+          case [ast.Expr(before_expr_value)]:
+            pass
+          case _:
+            before_expr_value = None
+        match before_expr_value, after.body:
+          case ast.expr(), [ast.Expr(after_expr_value)]:
             # Special case for patches that are expressions (rather than one or
             # more statements).
-            before_dumped_ast = ast.dump(before_value)
-            after_dumped_ast = ast.dump(after_value)
+            before_dumped_ast = ast.dump(before_expr_value)
+            after_dumped_ast = ast.dump(after_expr_value)
           case _:
             # In an AST dump with multiple statements, the statements will be
             # separated by ', '. An alternative is to ast.dump the before and
@@ -252,11 +257,19 @@ class ModuleASTPatcher(Callable[[], ContextManager[None]]):
             after_dumped_ast = ', '.join(map(ast.dump, after.body))
         num_matches = dumped_ast.count(before_dumped_ast)
         if not num_matches:
-          raise PatchError(
-              f'No match in the AST of {module_name}.{name} for the AST of'
-              f' ```\n{before_src}\n```. The target source is:'
-              f' ```\n{target_src}\n```.'
-          )
+          if before_expr_value and ast.dump(before_expr_value) in dumped_ast:
+            raise PatchError(
+                f'The AST of {module_name}.{name} contains the AST of'
+                f' ```\n{before_src}\n``` interpreted as an expression but not'
+                ' as statement(s). This is an error because the replacement'
+                ' code in the patch is statement(s), not an expression.'
+            )
+          else:
+            raise PatchError(
+                f'No match in the AST of {module_name}.{name} for the AST of'
+                f' ```\n{before_src}\n```. The target source is:'
+                f' ```\n{target_src}\n```.'
+            )
         if num_matches > allow_num_matches_upto.get(name, 1):
           raise PatchError(
               f'Too many matches in the AST of {module_name}.{name} for the AST'
