@@ -141,7 +141,9 @@ class AstPatcherTest(parameterized.TestCase):
 
   @parameterized.parameters([PlainClass.__name__, FancyClass.__name__])
   def test_no_double_patch_by_default(self, cls_name):
-    with self.assertRaisesRegex(ast_patcher.PatchError, 'Too many matches'):
+    with self.assertRaisesRegex(
+        ast_patcher.PatchError, r'Too many \(2\) matches'
+    ):
       patcher = ast_patcher.ModuleASTPatcher(
           MODULE, **{cls_name: ['self.x', 'self.x + 1']}
       )

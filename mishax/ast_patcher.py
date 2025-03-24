@@ -276,9 +276,10 @@ class ModuleASTPatcher(Callable[[], ContextManager[None]]):
             )
         if num_matches > allow_num_matches_upto.get(name, 1):
           raise PatchError(
-              f'Too many matches in the AST of {module_name}.{name} for the AST'
-              f' of ```\n{before_src}\n```. The target source is:'
-              f' ```\n{target_src}\n```.'
+              f'Too many ({num_matches}) matches in the AST of'
+              f' {module_name}.{name} for the AST of ```\n{before_src}\n```.'
+              f' The target source is: ```\n{target_src}\n```. Consider'
+              ' adjusting the PatchSettings.allow_num_matches_upto field.'
           )
         dumped_ast = dumped_ast.replace(before_dumped_ast, after_dumped_ast)
       patched_ast = ast.fix_missing_locations(_ast_undump(dumped_ast))
