@@ -26,8 +26,8 @@ import numpy as np
 gemma.install_clean()
 # pylint: disable=g-bad-import-order
 from gemma import gm  # pylint: disable=g-import-not-at-top
-from gemma import modules
-from gemma import transformer
+from gemma.deprecated import modules
+from gemma.deprecated import transformer
 
 
 class Transformer(transformer.Transformer):

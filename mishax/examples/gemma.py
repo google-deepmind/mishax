@@ -31,7 +31,7 @@ from mishax import ast_patcher
 from mishax import safe_greenlet
 
 if typing.TYPE_CHECKING:
-  from gemma import transformer  # pylint: disable=g-bad-import-order
+  from gemma.deprecated import transformer  # pylint: disable=g-bad-import-order
 
 
 # Flax collection names.
@@ -94,7 +94,7 @@ from {__name__} import _tag as tag
 """
 
 MODULES_PATCHER = ast_patcher.ModuleASTPatcher(
-    'gemma.modules',
+    'gemma.deprecated.modules',
     ast_patcher.PatchSettings(prefix=PREFIX),
     Attention=[
         # attn_output_pre_linear
@@ -181,7 +181,7 @@ MODULES_PATCHER = ast_patcher.ModuleASTPatcher(
     ],
 )
 TRANSFORMER_PATCHER = ast_patcher.ModuleASTPatcher(
-    'gemma.transformer',
+    'gemma.deprecated.transformer',
     ast_patcher.PatchSettings(prefix=PREFIX),
     Transformer=[
         # inputs
