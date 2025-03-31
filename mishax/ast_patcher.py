@@ -118,6 +118,7 @@ class ModuleASTPatcher(Callable[[], ContextManager[None]]):
     self._original_members = None
     self._src = None
     self._path = None
+    self._globals = None
     if not isinstance(self.module, str):
       self._updated_members = self.updated_members
 
@@ -187,6 +188,13 @@ class ModuleASTPatcher(Callable[[], ContextManager[None]]):
       self._setup()
     self._original_members: immutabledict.immutabledict[str, object]
     return self._original_members
+
+  @property
+  def globals(self) -> dict[str, object]:
+    if self._globals is None:
+      self._setup()
+    self._globals: dict[str, object]
+    return self._globals
 
   @property
   def src(self) -> str:
@@ -294,5 +302,6 @@ class ModuleASTPatcher(Callable[[], ContextManager[None]]):
     os.write(fd, self._src.encode())
     os.close(fd)
     exec(compile(self._src, self._path, 'exec'), envt := {})  # pylint: disable=exec-used
+    self._globals = envt
     updated_members = {name: envt[name] for name in self._patches_per_object}
     self._updated_members = immutabledict.immutabledict(updated_members)
