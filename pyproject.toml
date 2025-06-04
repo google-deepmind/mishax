@@ -16,7 +16,7 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
 ]
-dependencies = ["immutabledict", "greenlet"]
+dependencies = ["immutabledict", "greenlet", "jax", "jaxlib", "flax"]
 
 [project.optional-dependencies]
 gemma = ["jax", "jaxlib", "absl-py", "gemma@git+https://github.com/google-deepmind/gemma.git"]
