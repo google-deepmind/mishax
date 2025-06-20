@@ -41,6 +41,9 @@ jobs:
     - name: Run instrument_flax_loop tests
       run: python -m mishax.instrument_flax_loop_test
 
+    - name: Run instrument_jax_loop tests
+      run: python -m mishax.instrument_jax_loop_test
+
   gemma-test:
     runs-on: ${{ matrix.os }}
     strategy:
