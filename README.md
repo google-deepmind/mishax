@@ -41,6 +41,7 @@ python3 -m mishax.ast_patcher_test
 python3 -m mishax.safe_greenlet_test
 python3 -m mishax.instrument_flax_loop_test
 python3 -m mishax.instrument_jax_loop_test
+python3 -m pip install git+git://github.com/google-deepmind/mishax.git[gemma]
 python3 -m mishax.examples.gemma_test
 ```
 

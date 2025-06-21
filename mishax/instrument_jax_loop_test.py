@@ -14,92 +14,61 @@
 # limitations under the License.
 
 from absl.testing import absltest
+from absl.testing import parameterized
 import jax
-import jax.numpy as jnp
 from mishax import instrument_jax_loop
 import numpy as np
 
 
-class InstrumentJaxLoopTest(absltest.TestCase):
+def body_fn(carry, x):
+  return carry + x, (carry * 2, x * 2)
 
-  def test_scan_with_unstacked(self):
-    def body_fn(carry, x):
-      return carry + x, (carry * 2, x * 3)
 
-    init_carry = 0
-    xs = jnp.arange(5)
-    length = 5
+INIT = 3
+XS = np.array([0, 1, 2])
+LENGTH = 3
+EXPECTED_CARRY = 3 + 0 + 1 + 2
 
-    # Test with unstack=True (unstack all)
-    carry_all_unstacked, ys_all_unstacked = (
+TEST_CASES = (
+    ('unstack_all', True, ((6, 0), (6, 2), (8, 4))),
+    ('unstack_none', False, (np.array([6, 6, 8]), np.array([0, 2, 4]))),
+    ('unstack_mixed', (True, False), ((6, 6, 8), np.array([0, 2, 4]))),
+)
+
+
+class InstrumentJaxLoopTest(parameterized.TestCase):
+
+  @parameterized.named_parameters(*TEST_CASES)
+  def test_scan_with_unstacked(self, unstack, expected_ys):
+    carry, ys = (
         instrument_jax_loop.scan_with_unstacked(
-            body_fn, init_carry, xs, length=length, unstack=True
+            body_fn, INIT, XS, LENGTH, unstack=unstack
         )
     )
+    self.assertEqual(carry, EXPECTED_CARRY)
+    jax.tree.map(np.testing.assert_array_equal, ys, expected_ys)
 
-    self.assertEqual(carry_all_unstacked, sum(xs))
-    self.assertLen(ys_all_unstacked, length)
-    self.assertLen(ys_all_unstacked[0], 2)
-    self.assertLen(ys_all_unstacked[1], 2)
-    self.assertLen(ys_all_unstacked[2], 2)
-    self.assertLen(ys_all_unstacked[3], 2)
-    self.assertLen(ys_all_unstacked[4], 2)
-
-    # Verify unstacked outputs
-    expected_ys0 = []
-    expected_ys1 = []
-    current_carry = init_carry
-    for x_val in xs:
-      current_carry, (y0, y1) = body_fn(current_carry, x_val)
-      expected_ys0.append(y0)
-      expected_ys1.append(y1)
-
-    for i in range(length):
-      np.testing.assert_array_equal(ys_all_unstacked[i][0], expected_ys0[i])
-      np.testing.assert_array_equal(ys_all_unstacked[i][1], expected_ys1[i])
-
-    # Test with unstack=False (keep all stacked)
-    carry_all_stacked, ys_all_stacked = instrument_jax_loop.scan_with_unstacked(
-        body_fn, init_carry, xs, length=length, unstack=False
+  @parameterized.named_parameters(*TEST_CASES)
+  def test_scan_with_unstacked_no_length(self, unstack, expected_ys):
+    carry, ys = (
+        instrument_jax_loop.scan_with_unstacked(
+            body_fn, INIT, XS, unstack=unstack
+        )
     )
+    self.assertEqual(carry, EXPECTED_CARRY)
+    jax.tree.map(np.testing.assert_array_equal, ys, expected_ys)
 
-    self.assertEqual(carry_all_stacked, sum(xs))
-    self.assertLen(ys_all_stacked, 2)
-    np.testing.assert_array_equal(ys_all_stacked[0], jnp.array(expected_ys0))
-    np.testing.assert_array_equal(ys_all_stacked[1], jnp.array(expected_ys1))
-
-    # Test with mixed unstacking (True for first output, False for second)
-    unstack_mixed = (True, False)
-    carry_mixed, ys_mixed = instrument_jax_loop.scan_with_unstacked(
-        body_fn, init_carry, xs, length=length, unstack=unstack_mixed
-    )
-
-    self.assertEqual(carry_mixed, sum(xs))
-    self.assertLen(ys_mixed, 2)
-    self.assertLen(ys_mixed[0], length)  # Should be unstacked
-    np.testing.assert_array_equal(
-        ys_mixed[1], jnp.array(expected_ys1)
-    )  # Should be stacked
-
-    for i in range(length):
-      np.testing.assert_array_equal(ys_mixed[0][i], expected_ys0[i])
-
-  def test_scan_with_unstacked_jitted(self):
-    def body_fn(carry, x):
-      return carry + x, (carry * 2, x * 3)
-
-    init_carry = 0
-    xs = jnp.arange(5)
-    length = 5
-
+  @parameterized.named_parameters(*TEST_CASES)
+  def test_scan_with_unstacked_jitted(self, unstack, expected_ys):
     jitted_scan = jax.jit(
         instrument_jax_loop.scan_with_unstacked,
         static_argnames=('f', 'length', 'unstack'),
     )
-    carry, _ = jitted_scan(
-        f=body_fn, init=init_carry, xs=xs, length=length, unstack=True
+    carry, ys = jitted_scan(
+        f=body_fn, init=INIT, xs=XS, length=LENGTH, unstack=unstack
     )
-    self.assertEqual(carry, sum(xs))
+    self.assertEqual(carry, EXPECTED_CARRY)
+    jax.tree.map(np.testing.assert_array_equal, ys, expected_ys)
 
 if __name__ == '__main__':
   absltest.main()

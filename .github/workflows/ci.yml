@@ -67,7 +67,7 @@ jobs:
     - uses: lukka/get-cmake@latest
 
     - name: Install Mishax with gemma dependencies
-      run: pip install -e '.[gemma]'
+      run: pip install -e '.[gemma,dev]'
 
     - name: Run gemma example tests
       run: python -m mishax.examples.gemma_test

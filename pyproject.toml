@@ -16,11 +16,11 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
 ]
-dependencies = ["immutabledict", "greenlet", "jax", "jaxlib", "flax"]
+dependencies = ["flax", "immutabledict", "greenlet", "jax", "jaxlib"]
 
 [project.optional-dependencies]
-gemma = ["jax", "jaxlib", "absl-py", "gemma@git+https://github.com/google-deepmind/gemma.git"]
-dev = ["jax", "jaxlib", "absl-py"]
+dev = ["absl-py", "numpy"]
+gemma = ["gemma@git+https://github.com/google-deepmind/gemma.git"]
 
 [project.urls]
 Homepage = "https://github.com/google-deepmind/mishax"
