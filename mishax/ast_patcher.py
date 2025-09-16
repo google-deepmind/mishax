@@ -122,6 +122,9 @@ class ModuleASTPatcher(Callable[[], ContextManager[None]]):
     if not isinstance(self.module, str):
       self._updated_members = self.updated_members
 
+  def __str__(self):
+    return f'ModuleASTPatcher({self.module_name})'
+
   def install(self) -> None:
     """Installs the patches on the target module.
 
