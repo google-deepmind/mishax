@@ -72,7 +72,7 @@ class CallJitTransformerThrice(nn.Module):
   The __call__ method calls the underlying jitted transformer 3 times; this is
   needed to get cache hits.
   """
-  submodel: nn.jit(Transformer)
+  submodel: nn.jit(Transformer)  # pyrefly: ignore[invalid-annotation]
 
   @property
   def config(self):
@@ -89,14 +89,14 @@ class CallJitTransformerThrice(nn.Module):
 MODEL = Transformer(CONFIG)
 JIT_MODEL = nn.jit(Transformer)(CONFIG)
 CALL_JIT_TRANSFORMER_THRICE = CallJitTransformerThrice(JIT_MODEL)
-UNINSTRUMENTED_MODEL = gemma.TRANSFORMER_PATCHER.original_members[
+UNINSTRUMENTED_MODEL = gemma.TRANSFORMER_PATCHER.original_members[  # pyrefly: ignore[not-callable]
     Transformer.__name__
 ](CONFIG)
 
 BATCH_SIZE = 1
 SEQ_SIZE = 4
 TOKEN_INPUT = np.ones((BATCH_SIZE, SEQ_SIZE), dtype=np.int32)
-ATTENTION_MASK = np.ones(
+ATTENTION_MASK = np.ones(  # pyrefly: ignore[no-matching-overload]
     (BATCH_SIZE, SEQ_SIZE, CONFIG.max_cache_length), dtype=np.bool
 )
 
@@ -162,9 +162,9 @@ class GemmaTest(parameterized.TestCase):
     self.assertCountEqual(found_activations, self.site_visits_if_once)
 
     keys_0 = jax.device_get(keys_0)
-    self.assertIsNotNone(keys_0_ref())
+    self.assertIsNotNone(keys_0_ref())  # pyrefly: ignore[not-callable]
 
-    acts = run.retval[1][gemma.ACTIVATIONS]
+    acts = run.retval[1][gemma.ACTIVATIONS]  # pyrefly: ignore[unsupported-operation]
     for path, acts_for_site_and_layer in jax.tree.leaves_with_path(
         acts, is_leaf=lambda x: isinstance(x, tuple)
     ):
@@ -262,13 +262,13 @@ class GemmaTest(parameterized.TestCase):
         found_activations, self.site_visits_if_once * visits_per_site
     )
 
-    self.assertIsNone(keys_0_ref())
+    self.assertIsNone(keys_0_ref())  # pyrefly: ignore[not-callable]
 
     if not mutable:
-      self.assertNotIn(gemma.ACTIVATIONS, run.retval[1])
+      self.assertNotIn(gemma.ACTIVATIONS, run.retval[1])  # pyrefly: ignore[unsupported-operation]
       return  # The rest of these checks rely on getting activations.
 
-    acts = run.retval[1][gemma.ACTIVATIONS]
+    acts = run.retval[1][gemma.ACTIVATIONS]  # pyrefly: ignore[unsupported-operation]
     for path, acts_for_site_and_layer in jax.tree.leaves_with_path(
         acts, is_leaf=lambda x: isinstance(x, tuple)
     ):

@@ -135,7 +135,7 @@ import greenlet
 
 
 _REACHABLE_CHILD = contextvars.ContextVar[
-    weakref.ReferenceType['SafeGreenlet']
+    weakref.ReferenceType['SafeGreenlet']  # pyrefly: ignore[not-a-type]
 ]('reachable_child')
 _LOCAL_CONTEXTS = contextvars.ContextVar[list['LocalContextManager']](
     'local_contexts'
@@ -172,11 +172,11 @@ class _BoxedSendVal(Generic[_SendT]):
   @staticmethod
   def pop_if_boxed(sendval: '_BoxedSendVal[_SendT] | _SendT') -> _SendT:
     if isinstance(sendval, _BoxedSendVal):
-      box, sendval = sendval, sendval.value
+      box, sendval = sendval, sendval.value  # pyrefly: ignore[bad-assignment]
       if box.value is None:
         raise RuntimeError('Boxed sendval has already been popped!')
       box.value = None
-    return sendval
+    return sendval  # pyrefly: ignore[bad-return]
 
 
 def yield_(*args, default: Any = _NOT_PROVIDED) -> Any:
@@ -288,7 +288,7 @@ class SafeGreenlet(greenlet.greenlet, Generator[_YieldT, _SendT, _ReturnT]):
       if self:
         self.close()
     finally:
-      _REACHABLE_CHILD.reset(self._context_token)
+      _REACHABLE_CHILD.reset(self._context_token)  # pyrefly: ignore[bad-argument-type]
       self._context_token = None
 
   def throw(self, *args, **kwargs) -> _YieldT:
@@ -350,7 +350,7 @@ class EasyGenerator(Generator[_YieldT, _SendT, _ReturnT]):
   from the JAX tracer leak checker. The default behaviour can be regained by
   setting `avoid_sendval_refs=False`.
   """
-  sendval: _SendT = None
+  sendval: _SendT = None  # pyrefly: ignore[bad-assignment]
   retval: _ReturnT | None = None
 
   def __init__(
@@ -363,7 +363,7 @@ class EasyGenerator(Generator[_YieldT, _SendT, _ReturnT]):
 
   @contextlib.contextmanager
   def _reset_sendval_and_capture_retval(self) -> Iterator[None]:
-    self.sendval = None
+    self.sendval = None  # pyrefly: ignore[bad-assignment]
     try:
       yield
     except StopIteration as e:
@@ -375,7 +375,7 @@ class EasyGenerator(Generator[_YieldT, _SendT, _ReturnT]):
       if self.avoid_sendval_refs and value is not None:
         # If `value` is None then 1. boxing isn't needed, and 2. the generator
         # may be at the start, erroring if it receives anything besides None.
-        value = _BoxedSendVal(value)
+        value = _BoxedSendVal(value)  # pyrefly: ignore[bad-assignment]
       return self.inner_gen.send(value)
 
   def __next__(self) -> _YieldT:
@@ -386,7 +386,7 @@ class EasyGenerator(Generator[_YieldT, _SendT, _ReturnT]):
       return self.inner_gen.throw(*args, **kwargs)
 
   def close(self) -> None:
-    return self.inner_gen.close()
+    return self.inner_gen.close()  # pyrefly: ignore[bad-return]
 
 
 def easy_greenlet(
@@ -399,7 +399,7 @@ def easy_greenlet(
   def wrapped():
     # `ctx` passed so the greenlet owns a reference to the context, keeping it
     # from getting GC-d prematurely.
-    with SafeGreenlet(lambda ctx=ctx: run()) as glet:
+    with SafeGreenlet(lambda ctx=ctx: run()) as glet:  # pyrefly: ignore[not-callable]
       yield EasyGenerator(glet, avoid_sendval_refs=avoid_sendval_refs)
 
   ctx = wrapped()
@@ -478,7 +478,7 @@ class LocalContextManager(ContextManager[Any]):
 
 
 @typing.overload
-def yield_from(
+def yield_from(  # pyrefly: ignore[invalid-overload]
     iterable: Iterable[Any],
     default_value_to_send: None | _Sentinel = _NOT_PROVIDED,
 ) -> None:

@@ -70,11 +70,11 @@ class Site(enum.StrEnum):
     retval._value_ = value
     if path_from_block == (None,):
       path_from_block = None
-    retval.path_from_block = path_from_block
+    retval.path_from_block = path_from_block  # pyrefly: ignore[missing-attribute]
     return retval
 
   def is_layer_site(self) -> bool:
-    return self.path_from_block is not None
+    return self.path_from_block is not None  # pyrefly: ignore[missing-attribute]
 
 
 def _tag(
@@ -225,7 +225,7 @@ class _SelectedCallback(struct.PyTreeNode):
 def _validate_model(model: 'transformer.Transformer'):
   if not (
       TRANSFORMER_PATCHER.is_installed() and MODULES_PATCHER.is_installed()
-  ) or isinstance(model, TRANSFORMER_PATCHER.original_members['Transformer']):
+  ) or isinstance(model, TRANSFORMER_PATCHER.original_members['Transformer']):  # pyrefly: ignore[invalid-argument]
     raise RuntimeError(
         'Please install the patchers before constructing the transformer.'
     )
@@ -252,7 +252,7 @@ def vars_from_callback(callback: Callback, model: 'transformer.Transformer'):
   for site in Site:
     if site.is_layer_site():
       for layer in range(model.config.num_layers):
-        flat_retval[CALLBACK, f'layer_{layer}', *site.path_from_block, site] = (
+        flat_retval[CALLBACK, f'layer_{layer}', *site.path_from_block, site] = (  # pyrefly: ignore[missing-attribute]
             _SelectedCallback(callback, layer, site)
         )
     else:
@@ -261,7 +261,7 @@ def vars_from_callback(callback: Callback, model: 'transformer.Transformer'):
 
 
 @jax.tree_util.register_pytree_with_keys_class
-class GreenletYield(Callback):
+class GreenletYield(Callback):  # pyrefly: ignore[invalid-inheritance]
   """Callback that yields values to parent greenlet, with layer and site info.
 
   This class is registered as a pytree in such a way that the treedef is

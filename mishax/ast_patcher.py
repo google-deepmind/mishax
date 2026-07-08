@@ -61,7 +61,7 @@ def _ast_undump(dumped_ast: str) -> ast.AST:
 _INSTALLED_PATCHER_CONTEXTS = dict['ModuleASTPatcher', ContextManager[None]]()
 
 
-class ModuleASTPatcher(Callable[[], ContextManager[None]]):
+class ModuleASTPatcher(Callable[[], ContextManager[None]]):  # pyrefly: ignore[invalid-inheritance]
   """Creates a patcher that applies a series of patches to a module.
 
   The patched module members are in a separate temporary source file, visible to
@@ -183,35 +183,35 @@ class ModuleASTPatcher(Callable[[], ContextManager[None]]):
     if self._updated_members is None:
       self._setup()
     self._updated_members: immutabledict.immutabledict[str, object]
-    return self._updated_members
+    return self._updated_members  # pyrefly: ignore[bad-return]
 
   @property
   def original_members(self) -> immutabledict.immutabledict[str, object]:
     if self._original_members is None:
       self._setup()
     self._original_members: immutabledict.immutabledict[str, object]
-    return self._original_members
+    return self._original_members  # pyrefly: ignore[bad-return]
 
   @property
   def globals(self) -> dict[str, object]:
     if self._globals is None:
       self._setup()
     self._globals: dict[str, object]
-    return self._globals
+    return self._globals  # pyrefly: ignore[bad-return]
 
   @property
   def src(self) -> str:
     if self._src is None:
       self._setup()
     self._src: str
-    return self._src
+    return self._src  # pyrefly: ignore[bad-return]
 
   @property
   def path(self) -> str:
     if self._path is None:
       self._setup()
     self._path: str
-    return self._path
+    return self._path  # pyrefly: ignore[bad-return]
 
   def _setup(self):
     """Sets up the patcher source and temporary file."""
@@ -249,7 +249,7 @@ class ModuleASTPatcher(Callable[[], ContextManager[None]]):
         else:
           before, after = patch
         before_src = textwrap.dedent(before).strip()
-        after_src = textwrap.dedent(after).strip()
+        after_src = textwrap.dedent(after).strip()  # pyrefly: ignore[bad-argument-type]
         before, after = ast.parse(before_src), ast.parse(after_src)
 
         match before.body:
