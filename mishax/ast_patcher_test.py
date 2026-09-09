@@ -38,6 +38,14 @@ class PlainClass:
     return cls()
 
 
+class RepatchDummy:
+
+  def compute(self):
+    x = 10
+    x += 1
+    return x
+
+
 # Using decorators and an implicit metaclass.
 @jax.tree_util.register_static
 class FancyClass(enum.Enum):
@@ -194,6 +202,17 @@ class AstPatcherTest(parameterized.TestCase):
 
     with self.subTest('after_install_and_context'):
       self.assertEqual(safe_greenlet.yield_(), 'peekaboo')
+
+  def test_repatch_class_raises_patch_error(self):
+    patcher = ast_patcher.ModuleASTPatcher(
+        MODULE, RepatchDummy=['x += 1', 'x += 2']
+    )
+    with patcher():
+      with self.assertRaisesRegex(
+          ast_patcher.PatchError, r"does not define 'RepatchDummy'"
+      ):
+        ast_patcher.ModuleASTPatcher(MODULE, RepatchDummy=[])
+
 
 if __name__ == '__main__':
   absltest.main()

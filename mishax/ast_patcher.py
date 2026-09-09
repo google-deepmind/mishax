@@ -21,6 +21,7 @@ import contextlib
 import dataclasses
 import importlib
 import inspect
+import itertools
 import os
 import sys
 import tempfile
@@ -56,6 +57,21 @@ class PatchError(ValueError):
 def _ast_undump(dumped_ast: str) -> ast.AST:
   """Inverse of ast.dump."""
   return eval(dumped_ast, vars(ast) | vars(builtins))  # pylint: disable=eval-used
+
+
+def _ast_defines_symbol(node: ast.AST, sym: str) -> bool:
+  """Returns True if the AST node defines the symbol `sym`."""
+  if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+    return node.name == sym
+  targets = ()
+  if isinstance(node, ast.Assign):
+    targets = node.targets
+  elif isinstance(node, ast.AnnAssign):
+    targets = [node.target]
+  for n in itertools.chain(*[ast.walk(t) for t in targets]):
+    if isinstance(n, ast.Name) and n.id == sym and isinstance(n.ctx, ast.Store):
+      return True
+  return False
 
 
 _INSTALLED_PATCHER_CONTEXTS = dict['ModuleASTPatcher', ContextManager[None]]()
@@ -239,7 +255,24 @@ class ModuleASTPatcher(Callable[[], ContextManager[None]]):  # pyrefly: ignore[i
       )
     for name, patches in self._patches_per_object.items():
       target_src = inspect.getsource(getattr(self.module, name))
-      dumped_ast = ast.dump(ast.parse(target_src))
+      try:
+        parsed_target = ast.parse(target_src)
+      except SyntaxError as e:
+        raise PatchError(
+            f'Cannot patch {module_name}.{name}: inspect.getsource() returned'
+            ' invalid syntax. The target member may have already been'
+            f' monkey-patched:\n```\n{target_src}\n```'
+        ) from e
+      if not any(
+          _ast_defines_symbol(node, name) for node in parsed_target.body
+      ):
+        raise PatchError(
+            f'Cannot patch {module_name}.{name}: source retrieved by'
+            f" inspect.getsource() does not define '{name}'. The target member"
+            ' may have already been monkey-patched. Returned'
+            f' snippet:\n```\n{target_src}\n```'
+        )
+      dumped_ast = ast.dump(parsed_target)
       iter_patches = iter(patches)
       for patch in iter_patches:
         if isinstance(patch, str):
