@@ -57,6 +57,13 @@ def scan_with_unstacked(
       raise ValueError(f'Could not infer length from xs: found {x_lengths=}.')
     [length] = x_lengths
 
+  # Infer empty output shapes without indexing the input sequence.
+  if length == 0:
+    carry, ys = jax.lax.scan(f, init, xs, length=length, **kwargs)
+    return carry, jax.tree.map(
+        lambda unstack, y: () if unstack else y, unstack, ys
+    )
+
   unstack_leaves, unstack_treedef = jax.tree.flatten(unstack)
 
   def body(carry_and_accumulators, x_and_index):

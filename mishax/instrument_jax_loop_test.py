@@ -16,6 +16,7 @@
 from absl.testing import absltest
 from absl.testing import parameterized
 import jax
+import jax.numpy as jnp
 from mishax import instrument_jax_loop
 import numpy as np
 
@@ -69,6 +70,51 @@ class InstrumentJaxLoopTest(parameterized.TestCase):
     )
     self.assertEqual(carry, EXPECTED_CARRY)
     jax.tree.map(np.testing.assert_array_equal, ys, expected_ys)
+
+  @parameterized.product(
+      unstack=(True, False, (True, False)),
+      input_mode=('inferred', 'explicit', 'pytree', 'none'),
+      use_jit=(False, True),
+  )
+  def test_empty_scan(self, unstack, input_mode, use_jit):
+    init = jnp.array([1., 2.], dtype=jnp.float32)
+    xs = jnp.empty((0, 2), dtype=jnp.float32)
+    if input_mode == 'pytree':
+      xs = {'values': xs}
+    elif input_mode == 'none':
+      xs = None
+    length = None if input_mode == 'inferred' else 0
+
+    def body(carry, x):
+      if input_mode == 'pytree':
+        x = x['values']
+      elif input_mode == 'none':
+        x = jnp.ones_like(carry)
+      return carry + x, (carry * 2, {'square': x * x})
+
+    def scan(carry):
+      return instrument_jax_loop.scan_with_unstacked(
+          body, carry, xs, length, unstack=unstack, reverse=True
+      )
+
+    expected_carry, stacked = jax.lax.scan(
+        body, init, xs, length=length, reverse=True
+    )
+    if unstack is True:
+      expected_ys = ()
+    elif unstack is False:
+      expected_ys = stacked
+    else:
+      expected_ys = ((), stacked[1])
+    carry, ys = (jax.jit(scan) if use_jit else scan)(init)
+    np.testing.assert_array_equal(carry, expected_carry)
+    self.assertEqual(jax.tree.structure(ys), jax.tree.structure(expected_ys))
+    jax.tree.map(np.testing.assert_array_equal, ys, expected_ys)
+    jax.tree.map(lambda a, b: self.assertEqual(a.dtype, b.dtype), ys, expected_ys)
+    np.testing.assert_array_equal(
+        jax.grad(lambda c: scan(c)[0].sum())(init), jnp.ones_like(init)
+    )
+
 
 if __name__ == '__main__':
   absltest.main()
