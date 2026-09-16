@@ -105,7 +105,7 @@ class GemmaTest(parameterized.TestCase):
 
   def setUp(self):
     super().setUp()
-    self.empty_cache = CONFIG.init_cache(BATCH_SIZE, dtype=jnp.float32)
+    self.empty_cache = CONFIG.init_cache(BATCH_SIZE, dtype=jnp.float32)  # pyrefly: ignore[bad-argument-type]
     self.positions = transformer.build_positions_from_mask(TOKEN_INPUT != 0)
     self.params = MODEL.init(
         jax.random.key(0),
