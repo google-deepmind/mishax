@@ -15,6 +15,7 @@
 
 from collections.abc import Callable, Generator
 import contextlib
+import contextvars
 import enum
 import functools
 import gc
@@ -541,6 +542,81 @@ class GeneratorTest(parameterized.TestCase):
         next(generator)
 
     self.subtest_with_start(iterate_throw_and_send)
+
+
+class LocalContextFailureTest(parameterized.TestCase):
+
+  @parameterized.product(stage=['factory', 'enter'],
+                         error_type=[ValueError, KeyboardInterrupt, SystemExit],
+                         in_greenlet=[False, True])
+  def test_failed_entry_can_be_retried_and_does_not_break_outer_context(
+      self, stage, error_type, in_greenlet):
+    failure = error_type('Synthetic context entry failure')
+    exits = []
+    fail_next = True
+
+    class InnerContext:
+      def __enter__(self):
+        if stage == 'enter' and fail_next:
+          raise failure
+        return 'entered'
+
+      def __exit__(self, *args):
+        exits.append(args)
+
+    def factory():
+      if stage == 'factory' and fail_next:
+        raise failure
+      return InnerContext()
+
+    @contextlib.contextmanager
+    def outer():
+      yield 'outer'
+
+    def scenario():
+      nonlocal fail_next
+      wrapped = safe_greenlet.LocalContextManager(factory)
+      with safe_greenlet.LocalContextManager(outer):
+        with self.assertRaises(error_type) as raised:
+          with wrapped:
+            self.fail('The failing context entered')
+        self.assertIs(raised.exception, failure)
+        self.assertEmpty(exits)  # __exit__ is not called when __enter__ failed.
+        fail_next = False
+        # This switch first closes and reopens the outer local context.
+        with safe_greenlet.SafeGreenlet(lambda: 'child result') as child:
+          self.assertEqual(child.switch(), 'child result')
+        with wrapped as value:
+          self.assertEqual(value, 'entered')
+        self.assertLen(exits, 1)
+      return 'complete'
+
+    def run():
+      if in_greenlet:
+        with safe_greenlet.SafeGreenlet(scenario) as child:
+          self.assertEqual(child.switch(), 'complete')
+      else:
+        self.assertEqual(scenario(), 'complete')
+    # Keep even an uncorrected implementation's failure local to this test.
+    contextvars.Context().run(run)
+
+  def test_existing_entry_and_context_switch_order_is_unchanged(self):
+    events = []
+    @contextlib.contextmanager
+    def resource():
+      events.append('enter')
+      try:
+        yield 42
+      finally:
+        events.append('exit')
+    def run():
+      with safe_greenlet.LocalContextManager(resource) as value:
+        self.assertEqual(value, 42)
+        with safe_greenlet.SafeGreenlet(lambda: 7) as child:
+          self.assertEqual(child.switch(), 7)
+    contextvars.Context().run(run)
+    self.assertEqual(events, ['enter', 'exit', 'enter', 'exit'])
+
 
 
 if __name__ == '__main__':
