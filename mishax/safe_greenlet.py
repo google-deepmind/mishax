@@ -428,7 +428,14 @@ class LocalContextManager(ContextManager[Any]):
       _LOCAL_CONTEXTS.set([])
     _LOCAL_CONTEXTS.get().append(self)
     self._glet = getcurrent()
-    return self._open()
+    try:
+      return self._open()
+    except BaseException:
+      # A failed __enter__ has no matching __exit__; roll back registration.
+      self._context_manager = None
+      _LOCAL_CONTEXTS.get().pop()
+      self._glet = None
+      raise
 
   def _open(self) -> Any:
     if getcurrent() != self._glet:
