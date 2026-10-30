@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import ast
 import enum
 import sys
 
@@ -20,7 +21,6 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import jax
 import jax.tree_util
-
 from mishax import ast_patcher
 
 
@@ -73,6 +73,80 @@ def hit_patch():
 HIT_PATCH = False
 UndecoratedEnum = enum.Enum('UndecoratedEnum', ['A'])
 MODULE = sys.modules[__name__]
+
+
+class FuzzyAnchorTarget:
+
+  def call_with_drifted_kwarg(self, x, params):
+    x = self._helper(
+        x,
+        params=params,
+        scale=1.0,
+        compute_in_f32=True,
+    )
+    return x
+
+  def call_with_renamed_prefix(self, cache, new_cache, mask):
+    cache = self._Utils.maybe_update(cache, new_cache, mask)
+    return cache
+
+  def call_with_3way_arg_merge(self, attn_vec, params):
+    out = self._einsum(
+        attn_vec,
+        params,
+        scale=2.0,
+        extra_kwarg='upstream_added',
+    )
+    return out
+
+  def return_with_added_element(self, x, cache, metrics):
+    return x, cache, metrics, 'extra_upstream_item'
+
+  def return_with_wrapped_tuple(self, out, new_cache):
+    return (out, new_cache), 'params'
+
+  def return_with_renamed_element(self, val, attn_cache, stats):
+    return val, (attn_cache, stats)
+
+  def if_with_drifted_else(self, x, flag):
+    if flag:
+      y = x + 1
+    else:
+      y = x - 1
+      y = y * 2
+    return y
+
+  def ambiguous_calls(self, x, params):
+    a = self._helper(x, params=params, mode='a', extra=1)
+    a = self._helper(x, params=params, mode='b', extra=2)
+    return a
+
+  def call_with_multiple_splats(self, x, kw1, kw2):
+    return self._helper(x, **kw1, **kw2)
+
+  def nested_if_and_else_calls(self, x, mode):
+    if mode == 'early':
+      res = self._helper(x, tag='shared')
+    elif mode == 'nested':
+      if x > 0:
+        res = self._helper(x, tag='shared')
+      else:
+        res = x
+    else:
+      res = self._helper(x, tag='else')
+    return res
+
+  def _helper(self, x, **kwargs):
+    return x, kwargs
+
+  class _Utils:
+
+    @staticmethod
+    def maybe_update(cache, new_cache, mask):
+      return (cache, new_cache, mask)
+
+  def _einsum(self, x, params, **kwargs):
+    return (x, params, kwargs)
 
 
 class AstPatcherTest(parameterized.TestCase):
@@ -212,6 +286,405 @@ class AstPatcherTest(parameterized.TestCase):
           ast_patcher.PatchError, r"does not define 'RepatchDummy'"
       ):
         ast_patcher.ModuleASTPatcher(MODULE, RepatchDummy=[])
+
+  def test_ellipsis_call_and_rhs_rebind(self):
+    # Statement patch with `...` matching remaining args and kwargs.
+    patcher = ast_patcher.ModuleASTPatcher(
+        MODULE,
+        FuzzyAnchorTarget=[
+            'x = self._helper(x, ...)',
+            'x = self._helper(x, ...)\nx = (x, "tagged")',
+        ],
+    )
+    with patcher():
+      res, tag = FuzzyAnchorTarget().call_with_drifted_kwarg(3, 'p')
+      self.assertEqual(tag, 'tagged')
+      self.assertEqual(
+          res, (3, {'params': 'p', 'scale': 1.0, 'compute_in_f32': True})
+      )
+
+    # LHS rebinding (`_ = self._helper(x, ...)`) preserving captured kwargs.
+    patcher_rhs = ast_patcher.ModuleASTPatcher(
+        MODULE,
+        FuzzyAnchorTarget=[
+            'x = self._helper(x, ...)',
+            '_ = self._helper(x, ...)\nx = (_, "rebound")',
+        ],
+    )
+    with patcher_rhs():
+      res, tag = FuzzyAnchorTarget().call_with_drifted_kwarg(5, 'p2')
+      self.assertEqual(tag, 'rebound')
+      self.assertEqual(
+          res, (5, {'params': 'p2', 'scale': 1.0, 'compute_in_f32': True})
+      )
+
+  def test_ellipsis_call_arg_and_kwarg_modification(self):
+    # Wrapping arg 0 and overriding a keyword argument while preserving `...`.
+    patcher = ast_patcher.ModuleASTPatcher(
+        MODULE,
+        FuzzyAnchorTarget=[
+            'out = self._einsum(attn_vec, ..., scale=2.0)',
+            'out = self._einsum((attn_vec, "wrapped"), ..., scale=4.0)',
+        ],
+    )
+    with patcher():
+      res = FuzzyAnchorTarget().call_with_3way_arg_merge('v', 'p')
+      self.assertEqual(
+          res,
+          (
+              ('v', 'wrapped'),
+              'p',
+              {'scale': 4.0, 'extra_kwarg': 'upstream_added'},
+          ),
+      )
+
+    # Expression-level Call patch with `...`.
+    patcher_expr = ast_patcher.ModuleASTPatcher(
+        MODULE,
+        FuzzyAnchorTarget=[
+            'self._einsum(attn_vec, ...)',
+            'self._einsum((attn_vec, "expr_wrapped"), ...)',
+        ],
+    )
+    with patcher_expr():
+      res = FuzzyAnchorTarget().call_with_3way_arg_merge('v', 'p')
+      self.assertEqual(
+          res,
+          (
+              ('v', 'expr_wrapped'),
+              'p',
+              {'scale': 2.0, 'extra_kwarg': 'upstream_added'},
+          ),
+      )
+
+  def test_ellipsis_return_and_nested_tuples(self):
+    patcher_added = ast_patcher.ModuleASTPatcher(
+        MODULE,
+        FuzzyAnchorTarget=[
+            'return x, cache, ...',
+            'metrics = (metrics, "flushed")\nreturn x, cache, ...',
+        ],
+    )
+    with patcher_added():
+      res = FuzzyAnchorTarget().return_with_added_element(1, 'c', 'm')
+      self.assertEqual(res, (1, 'c', ('m', 'flushed'), 'extra_upstream_item'))
+
+    patcher_wrapped = ast_patcher.ModuleASTPatcher(
+        MODULE,
+        FuzzyAnchorTarget=[
+            'return (out, new_cache), ...',
+            'new_cache = (new_cache, "wrapped")\nreturn (out, new_cache), ...',
+        ],
+    )
+    with patcher_wrapped():
+      res = FuzzyAnchorTarget().return_with_wrapped_tuple(1, 'nc')
+      self.assertEqual(res, ((1, ('nc', 'wrapped')), 'params'))
+
+    patcher_nested = ast_patcher.ModuleASTPatcher(
+        MODULE,
+        FuzzyAnchorTarget=[
+            'return val, (..., stats)',
+            'stats = (stats, "renamed")\nreturn val, (..., stats)',
+        ],
+    )
+    with patcher_nested():
+      res = FuzzyAnchorTarget().return_with_renamed_element(1, 'ac', 's')
+      self.assertEqual(res, (1, ('ac', ('s', 'renamed'))))
+
+  def test_ellipsis_if_statement(self):
+    patcher = ast_patcher.ModuleASTPatcher(
+        MODULE,
+        FuzzyAnchorTarget=[
+            'if flag:\n  ...\nelse:\n  ...',
+            'if flag:\n  ...\nelse:\n  ...\ny += 100',
+        ],
+    )
+    with patcher():
+      self.assertEqual(FuzzyAnchorTarget().if_with_drifted_else(10, False), 118)
+      self.assertEqual(FuzzyAnchorTarget().if_with_drifted_else(10, True), 111)
+
+  def test_ellipsis_rejects_multiple_or_zero_matches(self):
+    with self.assertRaisesRegex(
+        ast_patcher.PatchError, r'Too many \(2\) matches'
+    ):
+      ast_patcher.ModuleASTPatcher(
+          MODULE,
+          FuzzyAnchorTarget=[
+              'a = self._helper(x, ...)',
+              'a = self._helper(x, ...)\na += 1',
+          ],
+      )
+
+    with self.assertRaisesRegex(ast_patcher.PatchError, 'No match in the AST'):
+      ast_patcher.ModuleASTPatcher(
+          MODULE,
+          FuzzyAnchorTarget=[
+              'x = self._helper(x, ..., nonexistent_kw=1)',
+              'x = self._helper(x, ..., nonexistent_kw=1)',
+          ],
+      )
+
+    with self.assertRaisesRegex(
+        ast_patcher.PatchError, 'Top-level `...` statements are not supported'
+    ):
+      ast_patcher.ModuleASTPatcher(
+          MODULE,
+          FuzzyAnchorTarget=[
+              'x = self._helper(x, ...)\n...',
+              'x = self._helper(x, ...)\n...',
+          ],
+      )
+
+    with self.assertRaisesRegex(
+        ast_patcher.PatchError, 'Top-level `...` statements are not supported'
+    ):
+      ast_patcher.ModuleASTPatcher(
+          MODULE,
+          FuzzyAnchorTarget=['...', '...'],
+      )
+
+    with self.assertRaisesRegex(
+        ast_patcher.PatchError,
+        'Replacement pattern contains `...` but match pattern does not',
+    ):
+      ast_patcher.ModuleASTPatcher(
+          MODULE,
+          FuzzyAnchorTarget=['return y', 'return y, ...'],
+      )
+
+    with self.assertRaisesRegex(
+        ast_patcher.PatchError,
+        'Replacement pattern has more `...` wildcards than match pattern',
+    ):
+      ast_patcher.ModuleASTPatcher(
+          MODULE,
+          FuzzyAnchorTarget=[
+              'x = self._helper(x, ...)',
+              'x = self._helper(self._helper(x, ...), ...)',
+          ],
+      )
+
+    with self.assertRaisesRegex(
+        ast_patcher.PatchError,
+        'Match pattern has more `...` wildcards than replacement pattern',
+    ):
+      ast_patcher.ModuleASTPatcher(
+          MODULE,
+          FuzzyAnchorTarget=[
+              'a = ...\na = self._helper(x, ...)',
+              'a = 0\na = self._helper(x, ...)',
+          ],
+      )
+
+    with self.assertRaisesRegex(
+        ast_patcher.PatchError,
+        'Match pattern has more `...` wildcards than replacement pattern',
+    ):
+      ast_patcher.ModuleASTPatcher(
+          MODULE,
+          FuzzyAnchorTarget=[
+              'x = self._helper(x, ...)',
+              'x = 0',
+          ],
+      )
+
+  def test_ellipsis_override_implicitly_captured_kwarg(self):
+    patcher = ast_patcher.ModuleASTPatcher(
+        MODULE,
+        FuzzyAnchorTarget=[
+            'x = self._helper(x, ...)',
+            'x = self._helper(x, ..., scale=9)',
+        ],
+    )
+    with patcher():
+      res, kw = FuzzyAnchorTarget().call_with_drifted_kwarg('val', {'w': 1})
+      self.assertEqual(res, 'val')
+      self.assertEqual(
+          kw, {'params': {'w': 1}, 'scale': 9, 'compute_in_f32': True}
+      )
+
+  def test_ellipsis_multiple_splats_preserved(self):
+    patcher = ast_patcher.ModuleASTPatcher(
+        MODULE,
+        FuzzyAnchorTarget=[
+            'return self._helper(x, ...)',
+            'return self._helper(x, ..., extra=42)',
+        ],
+    )
+    with patcher():
+      res, kw = FuzzyAnchorTarget().call_with_multiple_splats(
+          'val', {'a': 1}, {'b': 2}
+      )
+      self.assertEqual(res, 'val')
+      self.assertEqual(kw, {'a': 1, 'b': 2, 'extra': 42})
+
+  def test_ellipsis_multiple_in_tuple_raises(self):
+    with self.assertRaisesRegex(
+        ast_patcher.PatchError, 'At most one `...` is allowed per sequence'
+    ):
+      ast_patcher.ModuleASTPatcher(
+          MODULE,
+          FuzzyAnchorTarget=[
+              'return x, cache, ...',
+              'return x, ..., ...',
+          ],
+      )
+    with self.assertRaisesRegex(
+        ast_patcher.PatchError, 'At most one `...` is allowed per sequence'
+    ):
+      ast_patcher.ModuleASTPatcher(
+          MODULE,
+          FuzzyAnchorTarget=[
+              'return x, ..., ...',
+              'return x, ...',
+          ],
+      )
+    stmt = ast.parse('(x, ..., ...)').body[0]
+    assert isinstance(stmt, ast.Expr)
+    with self.assertRaisesRegex(
+        ast_patcher.PatchError, 'At most one `...` is allowed per sequence'
+    ):
+      ast_patcher._instantiate_ast_with_ellipsis(stmt.value, iter([]))
+
+  def test_ellipsis_explicit_splat_deletion(self):
+    patcher = ast_patcher.ModuleASTPatcher(
+        MODULE,
+        FuzzyAnchorTarget=[
+            'return self._helper(x, ..., **kw1)',
+            'return self._helper(x, ...)',
+        ],
+    )
+    with patcher():
+      res, kw = FuzzyAnchorTarget().call_with_multiple_splats(
+          'val', {'a': 1}, {'b': 2}
+      )
+      self.assertEqual(res, 'val')
+      self.assertEqual(kw, {'b': 2})
+
+  def test_ellipsis_expr_in_call_and_tuple(self):
+    patcher = ast_patcher.ModuleASTPatcher(
+        MODULE,
+        FuzzyAnchorTarget=[
+            'out = ...',
+            'out = self._helper(..., site="wrapped")',
+        ],
+    )
+    with patcher():
+      res = FuzzyAnchorTarget().call_with_3way_arg_merge('vec', 'params')
+      self.assertEqual(
+          res,
+          (
+              (
+                  'vec',
+                  'params',
+                  {'scale': 2.0, 'extra_kwarg': 'upstream_added'},
+              ),
+              {'site': 'wrapped'},
+          ),
+      )
+
+    patcher2 = ast_patcher.ModuleASTPatcher(
+        MODULE,
+        FuzzyAnchorTarget=[
+            'out = ...',
+            'out = (..., 42)',
+        ],
+    )
+    with patcher2():
+      res = FuzzyAnchorTarget().call_with_3way_arg_merge('vec', 'params')
+      self.assertEqual(
+          res,
+          (
+              (
+                  'vec',
+                  'params',
+                  {'scale': 2.0, 'extra_kwarg': 'upstream_added'},
+              ),
+              42,
+          ),
+      )
+
+  def test_ellipsis_call_with_nested_expr_and_call_wildcards(self):
+    patcher = ast_patcher.ModuleASTPatcher(
+        MODULE,
+        FuzzyAnchorTarget=[
+            """
+            a = ...
+            a = self._helper(x, ...)
+            """,
+            """
+            a = 0
+            a = self._helper(tuple([..., 42]), ...)
+            """,
+        ],
+    )
+    with patcher():
+      res = FuzzyAnchorTarget().ambiguous_calls('vec', 'params')
+      self.assertEqual(
+          res,
+          (
+              (
+                  (
+                      'vec',
+                      {
+                          'params': 'params',
+                          'mode': 'a',
+                          'extra': 1,
+                      },
+                  ),
+                  42,
+              ),
+              {
+                  'params': 'params',
+                  'mode': 'b',
+                  'extra': 2,
+              },
+          ),
+      )
+
+  def test_ellipsis_in_type_annotation_ignored(self):
+    patcher = ast_patcher.ModuleASTPatcher(
+        MODULE,
+        FuzzyAnchorTarget=[
+            'x = self._helper(x, ...)',
+            """
+            x = self._helper(x, ...)
+            extra: tuple[int, ...] = (1, 2)
+            """,
+        ],
+    )
+    with patcher():
+      res, kw = FuzzyAnchorTarget().call_with_drifted_kwarg('val', {'w': 1})
+      self.assertEqual(res, 'val')
+      self.assertEqual(
+          kw, {'params': {'w': 1}, 'scale': 1.0, 'compute_in_f32': True}
+      )
+
+  def test_ellipsis_multi_match_nested_if_else_order(self):
+    patcher = ast_patcher.ModuleASTPatcher(
+        MODULE,
+        ast_patcher.PatchSettings(
+            allow_num_matches_upto={'FuzzyAnchorTarget': 3}
+        ),
+        FuzzyAnchorTarget=[
+            'res = self._helper(x, tag=...)',
+            'res = self._helper(x, tag=...)\nres = (res, "patched")',
+        ],
+    )
+    with patcher():
+      target = FuzzyAnchorTarget()
+      self.assertEqual(
+          target.nested_if_and_else_calls(1, 'early'),
+          ((1, {'tag': 'shared'}), 'patched'),
+      )
+      self.assertEqual(
+          target.nested_if_and_else_calls(1, 'nested'),
+          ((1, {'tag': 'shared'}), 'patched'),
+      )
+      self.assertEqual(
+          target.nested_if_and_else_calls(1, 'other'),
+          ((1, {'tag': 'else'}), 'patched'),
+      )
 
 
 if __name__ == '__main__':
